@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>0001 · RAG 全景:从一堆乱资料到一句带出处的回答</title>
+  <link rel="stylesheet" href="../assets/lesson.css" />
+</head>
+<body>
+<article class="lesson">
+
+  <p class="eyebrow">Lesson 0001 · 个人知识库</p>
+  <h1>RAG 全景:从一堆乱资料,到一句带出处的回答</h1>
+  <p class="subtitle">先建立心智模型,再写第一行代码。</p>
+
+  <div class="win">
+    <strong>这一课的小胜利:</strong>读完后,你能用自己的话画出 RAG 的两阶段管道,
+    并指出每一步落在你 <code>privateknowledgebase.API</code> 项目的哪一层——
+    从而明确"下一步该新建哪几个文件"。
+  </div>
+
+  <div class="terms">
+    <p class="terms-head">先认词 · 本课会反复出现</p>
+    <dl>
+      <dt>RAG <span class="en">检索增强生成</span></dt>
+      <dd>先<strong>查资料</strong>再<strong>答题</strong>。不靠模型死记,而是临场翻出相关原文喂给它,让它照着答。本课主角。</dd>
+      <dt>嵌入 / 向量 <span class="en">Embedding / Vector</span></dt>
+      <dd>把一段文字变成一串数字(坐标)。意思相近的文字,坐标也相近——于是"找相似"变成"找邻居"。</dd>
+      <dt>向量库 <span class="en">Vector Store</span></dt>
+      <dd>专门存这些数字坐标、并能飞快"找最近邻"的数据库。资料的家。</dd>
+      <dt>检索 / top-k <span class="en">Retrieval</span></dt>
+      <dd>从向量库里挑出离问题最近的 <em>k</em> 段原文(比如前 3 段),当作答题的"参考资料"。</dd>
+      <dt>管道 · 离线/在线 <span class="en">Pipeline</span></dt>
+      <dd>一串按顺序的加工步骤。<span class="pin">离线</span>=平时建库(资料多了才跑);<span class="pin">在线</span>=每次提问都跑。</dd>
+      <dt>出处 <span class="en">Source / Citation</span></dt>
+      <dd>答案背后引用的那段原文。能给出处 = 可追溯、可信。</dd>
+      <dt>端口 / 适配器 <span class="en">Port / Adapter</span></dt>
+      <dd>端口="我需要一个能干这事的东西"的约定(接口);适配器=真正干活的具体实现。换实现不动主逻辑。</dd>
+    </dl>
+  </div>
+
+  <h2>为什么不直接把资料塞给模型?</h2>
+  <p>
+    大语言模型把知识压进了自己的权重里(<em>参数化记忆</em>),但它没法精确地
+    访问、更新或<strong>给出处</strong>。对私人资料,它干脆没见过。
+    RAG 的核心主张是:给模型再配一块<em>非参数化记忆</em>——一个可检索的向量索引——
+    回答时先<strong>检索</strong>出相关原文,再让模型<strong>基于检索到的内容</strong>作答。<a class="cite" href="#s1" title="Lewis et al., 2020">[1]</a>
+  </p>
+  <p>
+    这一步换来三样你正好需要的东西:<strong>可给出处</strong>、<strong>可更新</strong>(加资料不用重训模型)、
+    以及<strong>隐私可控</strong>(资料留在你的本地索引里)。
+  </p>
+
+  <h2>管道分两个阶段</h2>
+  <p>关键洞察:RAG 不是一条线,而是<strong>两条</strong>——一条离线建库,一条在线问答。它们在"向量库"这里交汇。</p>
+
+  <p style="font-family:var(--mono);font-size:.72rem;color:var(--accent);margin:.2rem 0">离线 · INGESTION(建库,资料变多时才跑)</p>
+  <div class="pipe">
+    <div class="step offline"><b>加载</b>读取原始资料<br>Loader</div>
+    <div class="step offline"><b>分块</b>切成小段<br>Chunk</div>
+    <div class="step offline"><b>嵌入</b>每段算向量<br>Embedding</div>
+    <div class="step offline"><b>入库</b>存向量+元数据<br>Vector Store</div>
+  </div>
+
+  <p style="font-family:var(--mono);font-size:.72rem;color:var(--good);margin:1rem 0 .2rem">在线 · QUERY(每次提问都跑)</p>
+  <div class="pipe">
+    <div class="step online"><b>问题嵌入</b>把提问也算成向量</div>
+    <div class="step online"><b>检索</b>取最相似的 top-k 段</div>
+    <div class="step online"><b>拼接</b>原文+问题组成提示</div>
+    <div class="step online"><b>生成</b>模型据此带出处作答</div>
+  </div>
+
+  <h2>映射到你的架构(这才是重点)</h2>
+  <p>
+    你的项目是 Onion/DDD,依赖向内。新建知识库能力时,每一步该放哪层是确定的:
+  </p>
+  <p>
+    · <span class="layer">domain</span> 纯数据与规则:<code>Document</code>、<code>Chunk</code> 实体,
+      <code>VectorStore</code> / <code>Embedder</code> <strong>端口(port)</strong>。无 I/O、无框架。<br>
+    · <span class="layer">application</span> 用例编排:<code>IngestDocument</code>(加载→分块→嵌入→入库)、
+      <code>AnswerQuestion</code>(检索→拼接→调用已有 <code>LLMProvider</code>)。<br>
+    · <span class="layer">infrastructure</span> 适配器:PDF/Markdown <code>Loader</code>、
+      Chroma 向量库实现、Ollama 嵌入实现。<strong>唯一允许碰 I/O 的地方。</strong><br>
+    · <span class="layer">interface</span> FastAPI 路由:<code>POST /knowledge/ingest</code>、<code>POST /knowledge/ask</code>。
+  </p>
+  <p>
+    好消息:嵌入这一步你<strong>已经有港口了</strong>——<code>LLMProvider.embeddings()</code> 早已定义。
+    所以你缺的主要是 <code>Document/Chunk</code> 模型、<code>VectorStore</code> 端口,以及两个用例。
+  </p>
+
+  <h2>检验一下(凭记忆作答)</h2>
+
+  <div class="quiz" id="q1">
+    <div class="q">1. "把一份 PDF 切块、给每段算向量、存进索引"——这属于哪个阶段?</div>
+    <button data-correct="true">离线 · 接入索引阶段</button>
+    <button>在线 · 查询回答阶段</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz" id="q2">
+    <div class="q">2. <code>Chunk</code> 是个纯数据实体(无 I/O)。它该放在哪一层?</div>
+    <button data-correct="true">领域 domain</button>
+    <button>应用 application</button>
+    <button>基础 infrastructure</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz" id="q3">
+    <div class="q">3. RAG 相比"直接问模型",最贴合你使命的那个好处是?</div>
+    <button data-correct="true">回答能附上原文出处</button>
+    <button>生成速度明显更快些</button>
+    <button>模型体积会变得更小</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="source">
+    <span class="tag">Primary source · 先读这个</span>
+    <p style="margin:.5rem 0 0">
+      <a href="https://arxiv.org/abs/2005.11401">Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks (Lewis et al., 2020)</a>
+      ——只需读 <em>Abstract</em> 与 <em>Introduction</em>,体会"参数化 vs 非参数化记忆"这一对核心概念。
+      想直接看本地代码版,看 <a href="https://ollama.com/blog/embedding-models">Ollama embedding 三步示例</a>。
+    </p>
+  </div>
+
+  <p class="teacher">
+    <strong>我是你的老师。</strong>任何不清楚的地方——"分块到底多大?""向量相似怎么算?""为什么要 top-k?"——
+    随时在对话里问我。下一课 <code>0002 分块</code> 会带你做一个能跑的切块器,接进你的项目。
+  </p>
+
+  <p class="nav">
+    工作区:<a href="../MISSION.md">MISSION</a> · <a href="../RESOURCES.md">RESOURCES</a> · <a href="../NOTES.md">NOTES</a>
+  </p>
+
+</article>
+
+<script>
+  // Tight, automatic feedback loop: click an answer, know immediately.
+  document.querySelectorAll('.quiz').forEach(function (quiz) {
+    var fb = quiz.querySelector('.feedback');
+    quiz.querySelectorAll('button').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        if (quiz.dataset.done) return;
+        var ok = btn.dataset.correct === 'true';
+        btn.classList.add(ok ? 'correct' : 'wrong');
+        if (!ok) {
+          var right = quiz.querySelector('button[data-correct="true"]');
+          if (right) right.classList.add('correct');
+        }
+        fb.textContent = ok ? '✓ 对了。' : '再想想这一步在管道里的位置——正确答案已高亮。';
+        quiz.dataset.done = '1';
+      });
+    });
+  });
+</script>
+</body>
+</html>
