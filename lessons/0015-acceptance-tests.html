@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>0015 · 自动化验收:把冒烟测试钉死成回归</title>
+  <link rel="stylesheet" href="../assets/lesson.css" />
+</head>
+<body>
+<article class="lesson">
+
+  <p class="eyebrow">Lesson 0015 · 个人知识库 · 守住成果</p>
+  <h1>自动化验收:四步冒烟,写成一键回归</h1>
+  <p class="subtitle">第 12 课手敲的 curl,这一课固化成 pytest。以后改完一条命令,确认没改坏。</p>
+
+  <div class="win">
+    <strong>这一课的小胜利:</strong>你能用 <code>TestClient</code> 把第 12 课那四步验收
+    (健康 / 投喂 / 命中 / 库外认怂)写成四个 <code>test_</code> 函数,
+    再用<strong>依赖覆盖</strong>把真模型、真 Chroma 换成<strong>假实现</strong>——
+    测试不连网、毫秒级、每次结果一样。<code>pytest -q</code> 全绿,才敢说"这次改动没破坏老功能"。
+  </div>
+
+  <div class="terms">
+    <p class="terms-head">先认词 · 本课会反复出现</p>
+    <dl>
+      <dt>测试客户端 <span class="en">TestClient</span></dt>
+      <dd>FastAPI 给的"假浏览器":不用真起服务器,直接 <code>client.post("/ingest", json=…)</code> 调你的应用。</dd>
+      <dt>断言 <span class="en">assert</span></dt>
+      <dd>写下"我期望什么":<code>assert resp.status_code == 200</code>。不成立就测试失败、亮红。</dd>
+      <dt>依赖覆盖 <span class="en">dependency_overrides</span></dt>
+      <dd>测试时把 <code>Depends(...)</code> 里的真实现<em>替</em>成假的——不碰真模型/真向量库,结果才稳定。</dd>
+      <dt>假实现 <span class="en">fake / stub</span></dt>
+      <dd>一个最小可控的替身(比如固定返回某向量的 FakeProvider)。让测试<em>确定</em>,不受模型随机性影响。</dd>
+      <dt>确定性 <span class="en">determinism</span></dt>
+      <dd>同样输入永远同样输出。测试必须确定,否则今天绿明天红,谁也不敢信。</dd>
+      <dt>回归 <span class="en">regression</span></dt>
+      <dd>"改 A 把 B 弄坏了"。回归测试就是那张安全网:每次改完跑一遍,坏了立刻报红。</dd>
+    </dl>
+  </div>
+
+  <h2>为什么不直接连真模型测</h2>
+  <p>
+    真 Ollama / 真 Chroma 又慢又"飘"——同一句话,生成的答案可能每次略不同,测试就会<strong>时绿时红</strong>。
+    所以验收测试要<strong>换上假实现</strong>:嵌入返回固定向量、生成返回固定句式。
+    这样测的是<strong>你的编排逻辑</strong>(投喂→检索→认怂),而不是模型本身。模型质量另有评测。
+  </p>
+  <div class="pipe">
+    <div class="step online"><b>TestClient</b> 假浏览器</div>
+    <div class="step online"><b>override</b> 注入假 Provider</div>
+    <div class="step offline"><b>4 个 test_</b> 断言</div>
+    <div class="step offline"><b>pytest -q</b> 一键回归</div>
+  </div>
+
+  <h2>亲手试:跑一遍测试,再故意改坏看它报红</h2>
+  <p>
+    点<strong>运行测试</strong>,四个 <code>test_</code> 逐个变绿。再勾上<strong>引入 bug</strong>(假装把"认怂阈值"调没了),
+    重跑——库外那条立刻<strong>报红</strong>。这就是回归网在干活。(运行是<strong>诚实模拟</strong>,真命令见下方。)
+  </p>
+
+  <div class="widget">
+    <p style="margin:0 0 .7rem">
+      <button class="run" id="run">运行测试</button>
+      <label class="bugbox"><input type="checkbox" id="bug" /> 引入 bug(去掉认怂阈值)</label>
+      <span class="stat" id="stat">就绪</span>
+    </p>
+    <div class="tests" id="tests"></div>
+    <pre class="summary" id="summary"></pre>
+  </div>
+
+  <h2>落到你的项目:两个文件</h2>
+
+  <p><strong>① conftest.py</strong> — 假实现 + 依赖覆盖 + 客户端夹具:</p>
+  <pre class="code">
+# privateknowledgebase.API/tests/conftest.py
+import pytest
+from fastapi.testclient import TestClient
+from app.main import app
+from app.interface.http.deps import get_answer_service, get_ingest_service
+
+class FakeProvider:                       # 固定向量,确定性
+    def embeddings(self, model, inputs):
+        return [[1.0, 0.0, 0.0] for _ in inputs]
+
+@pytest.fixture
+def client():
+    # 用假 Provider 组出 ingest / answer 服务(内存向量库),替换真实现
+    ingest, answer = build_services_with(FakeProvider())   # 你的组装小工厂
+    app.dependency_overrides[get_ingest_service] = lambda: ingest
+    app.dependency_overrides[get_answer_service] = lambda: answer
+    yield TestClient(app)
+    app.dependency_overrides.clear()      # 测完还原,别污染别的测试
+  </pre>
+  <p class="aside">
+    <code>dependency_overrides</code> 是 FastAPI 内建的测试接缝:不改一行业务代码,就能把 <code>Depends(...)</code>
+    里的真东西换成假的。这正是第 9–10 课"组合根集中接线"换来的好处。
+  </p>
+
+  <p><strong>② test_acceptance.py</strong> — 四步验收,逐条断言:</p>
+  <pre class="code">
+# privateknowledgebase.API/tests/test_acceptance.py
+def test_health(client):
+    resp = client.get("/health")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}
+
+def test_ingest(client):                                  # 投喂
+    resp = client.post("/ingest", json={
+        "path": "notes/e.md", "content": "# 嵌入\n嵌入把文本变成向量。"})
+    assert resp.status_code == 200
+    assert resp.json()["chunks_ingested"] >= 1
+
+def test_ask_in_library(client):                          # 命中:有答案 + 有出处
+    client.post("/ingest", json={"path": "notes/e.md", "content": "嵌入把文本变成向量。"})
+    resp = client.post("/knowledge/ask", json={"question": "嵌入是什么?", "k": 3})
+    assert resp.status_code == 200
+    assert resp.json()["sources"]                         # 非空才算命中
+
+def test_ask_off_library(client):                         # 库外:必须认怂
+    resp = client.post("/knowledge/ask", json={"question": "明天天气?", "k": 3})
+    assert resp.status_code == 200
+    assert resp.json()["sources"] == []                   # 没出处,认怂
+  </pre>
+
+  <p><strong>③ 跑起来</strong></p>
+  <pre class="code">
+pip install pytest httpx          # TestClient 依赖 httpx
+pytest -q                         # 自动发现 test_*,逐个跑,报结果
+#   ....                          [100%]
+#   4 passed in 0.12s
+  </pre>
+
+  <h2>检验一下(凭记忆作答)</h2>
+
+  <div class="quiz" id="qa">
+    <div class="q">1. 为了让验收测试稳定可重复,该怎么对待真模型 / 真向量库?</div>
+    <button data-correct="true">换成假实现注入</button>
+    <button>每次都连真模型</button>
+    <button>干脆跳过不测它</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz" id="qb">
+    <div class="q">2. 用 <code>TestClient</code> 写测试函数,正确姿势是?</div>
+    <button data-correct="true">用同步函数直接断言</button>
+    <button>必须写成异步协程吧</button>
+    <button>得手动起服务器才行</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz" id="qc">
+    <div class="q">3. 这一整套自动化测试,带给你最大的价值是?</div>
+    <button data-correct="true">改完一键查回归</button>
+    <button>让代码跑得更快</button>
+    <button>省掉写文档功夫</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="source">
+    <span class="tag">Primary source · 先读这个</span>
+    <p style="margin:.5rem 0 0">
+      <a href="https://fastapi.tiangolo.com/tutorial/testing/">FastAPI · Testing</a>
+      给出标准用法:<code>TestClient(app)</code>、<code>test_</code> 开头的<strong>普通 def</strong>(不是 async)、
+      <code>client.post(..., json=...)</code>、<code>assert resp.status_code == 200</code> 与 <code>resp.json()</code>。
+      把真依赖换成假的,见 <a href="https://fastapi.tiangolo.com/advanced/testing-dependencies/">Testing Dependencies with Overrides</a>。
+    </p>
+  </div>
+
+  <p class="teacher">
+    <strong>我是你的老师。</strong>"想接 GitHub Actions 每次提交自动跑怎么配?""前端那侧用 Vitest/Playwright 怎么测?"
+    "要不要给检索单独写'命中率'评测?"——都问我。
+    到这,你的个人知识库已经<strong>能建、能问、能扩(PDF/网页)、能提准(重排)、能守(回归测试)</strong>。
+    下一课你来定方向:接 CI、上前端测试、做检索评测,或回头把某节真正写进 <code>privateknowledgebase.API</code>。
+  </p>
+
+  <p class="nav">
+    上一课 <a href="0014-rerank.html">0014 重排</a> ·
+    工作区 <a href="../MISSION.md">MISSION</a> · <a href="../RESOURCES.md">RESOURCES</a> · <a href="../NOTES.md">NOTES</a>
+  </p>
+
+</article>
+
+<script>
+  // ---- pytest runner sim (honest stand-in) ----
+  var TESTS = [
+    { name: 'test_health', bugSensitive: false },
+    { name: 'test_ingest', bugSensitive: false },
+    { name: 'test_ask_in_library', bugSensitive: false },
+    { name: 'test_ask_off_library', bugSensitive: true }   // 阈值没了 → 库外也返回出处 → 失败
+  ];
+
+  var testsBox = document.getElementById('tests');
+  var summaryBox = document.getElementById('summary');
+  var statBox = document.getElementById('stat');
+  var bug = document.getElementById('bug');
+  var running = false;
+
+  function reset() {
+    testsBox.innerHTML = '';
+    summaryBox.textContent = '';
+    summaryBox.className = 'summary';
+    statBox.textContent = '就绪';
+    TESTS.forEach(function (t, i) {
+      var row = document.createElement('div');
+      row.className = 'tcase';
+      row.id = 'tc' + i;
+      row.innerHTML = '<span class="dot"></span><span class="tn">' + t.name + '</span>'
+        + '<span class="res"></span>';
+      testsBox.appendChild(row);
+    });
+  }
+
+  function run() {
+    if (running) return;
+    running = true;
+    reset();
+    statBox.textContent = '运行中…';
+    var hasBug = bug.checked;
+    var failed = 0;
+    TESTS.forEach(function (t, i) {
+      setTimeout(function () {
+        var row = document.getElementById('tc' + i);
+        var fail = hasBug && t.bugSensitive;
+        if (fail) failed++;
+        row.classList.add(fail ? 'fail' : 'pass');
+        row.querySelector('.res').textContent = fail ? 'FAILED' : 'PASSED';
+        if (i === TESTS.length - 1) {
+          var passed = TESTS.length - failed;
+          if (failed) {
+            statBox.textContent = '✗ ' + failed + ' failed';
+            summaryBox.className = 'summary err';
+            summaryBox.textContent = 'E   assert resp.json()["sources"] == []\n'
+              + 'E   AssertionError: 库外问题却返回了出处(认怂阈值丢了)\n\n'
+              + passed + ' passed, ' + failed + ' failed';
+          } else {
+            statBox.textContent = '✓ ' + passed + ' passed';
+            summaryBox.className = 'summary ok';
+            summaryBox.textContent = '....                              [100%]\n'
+              + passed + ' passed in 0.12s';
+          }
+          running = false;
+        }
+      }, (i + 1) * 420);
+    });
+  }
+
+  document.getElementById('run').addEventListener('click', run);
+  bug.addEventListener('change', reset);
+  reset();
+
+  // ---- quizzes ----
+  document.querySelectorAll('.quiz').forEach(function (quiz) {
+    var fb = quiz.querySelector('.feedback');
+    quiz.querySelectorAll('button').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        if (quiz.dataset.done) return;
+        var ok = btn.dataset.correct === 'true';
+        btn.classList.add(ok ? 'correct' : 'wrong');
+        if (!ok) {
+          var right = quiz.querySelector('button[data-correct="true"]');
+          if (right) right.classList.add('correct');
+        }
+        fb.textContent = ok
+          ? '\u2713 \u5bf9\u4e86\u3002'
+          : '\u518d\u60f3\u60f3\u201c\u5047\u5b9e\u73b0\u6ce8\u5165 / \u666e\u901a def / \u4e00\u952e\u67e5\u56de\u5f52\u201d\u2014\u2014\u6b63\u786e\u7b54\u6848\u5df2\u9ad8\u4eae\u3002';
+        quiz.dataset.done = '1';
+      });
+    });
+  });
+</script>
+
+<style>
+  /* lesson-local styles (promote to assets if reused) */
+  pre.code, pre.summary {
+    font-family: var(--mono); font-size: .73rem; line-height: 1.7;
+    background: #f1efe8; padding: .8rem 1rem; border-radius: 6px;
+    overflow-x: auto; white-space: pre; margin: .6rem 0 1rem;
+  }
+  .aside { font-size: .86rem; opacity: .82; border-left: 3px solid var(--accent); padding-left: .8rem; }
+  button.run { font-family: var(--serif); font-size: .92rem; cursor: pointer;
+    padding: .42rem .9rem; border-radius: 6px; border: 1px solid var(--accent);
+    background: var(--accent); color: #fff; }
+  .bugbox { font-size: .84rem; margin-left: .6rem; cursor: pointer; }
+  .stat { font-family: var(--mono); font-size: .82rem; margin-left: .6rem; opacity: .8; }
+  .tests { display: flex; flex-direction: column; gap: .35rem; }
+  .tcase { display: grid; grid-template-columns: 1.3rem 1fr 4.5rem; gap: .5rem; align-items: center;
+    padding: .35rem .5rem; border-radius: 6px; background: rgba(0,0,0,.03); }
+  .tcase .dot { width: .7rem; height: .7rem; border-radius: 50%; background: rgba(0,0,0,.18); }
+  .tcase .tn { font-family: var(--mono); font-size: .78rem; }
+  .tcase .res { font-family: var(--mono); font-size: .72rem; text-align: right; opacity: .8; }
+  .tcase.pass { background: rgba(47,93,58,.12); }
+  .tcase.pass .dot { background: var(--good); }
+  .tcase.pass .res { color: var(--good); }
+  .tcase.fail { background: rgba(122,31,31,.1); }
+  .tcase.fail .dot { background: var(--accent); }
+  .tcase.fail .res { color: var(--accent); }
+  pre.summary { margin-top: .7rem; min-height: 1rem; }
+  pre.summary.ok { color: var(--good); background: rgba(47,93,58,.08); }
+  pre.summary.err { color: var(--accent); background: rgba(122,31,31,.07); }
+</style>
+</body>
+</html>

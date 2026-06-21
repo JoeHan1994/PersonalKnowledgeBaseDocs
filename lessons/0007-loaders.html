@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>0007 · 加载器:把"乱七八糟的格式"收成统一文档</title>
+  <link rel="stylesheet" href="../assets/lesson.css" />
+</head>
+<body>
+<article class="lesson">
+
+  <p class="eyebrow">Lesson 0007 · 个人知识库</p>
+  <h1>加载器:把"乱七八糟的格式"收成统一文档</h1>
+  <p class="subtitle">这是你使命的正面战场——异构数据,统一入口。</p>
+
+  <div class="win">
+    <strong>这一课的小胜利:</strong>你能粘一段带格式的 Markdown,看着<strong>加载器</strong>把它规整成一个
+    <strong>统一的 <code>Document</code></strong>(抽出元数据、剥掉语法噪声、附上来源);
+    并说清"为什么每加一种新格式,只需加一个 <span class="layer">infrastructure</span> 适配器"。
+  </div>
+
+  <div class="terms">
+    <p class="terms-head">先认词 · 本课会反复出现</p>
+    <dl>
+      <dt>加载器 <span class="en">Loader</span></dt>
+      <dd>读一个来源(文件/网页/…)、把它解析成统一文档的部件。异构数据进、统一格式出。本课主角。</dd>
+      <dt>文档 <span class="en">Document</span></dt>
+      <dd>加载后的标准产物:<code>{ 正文文本 + 元数据 }</code>。之后交给分块器切成块(第 2 课)。</dd>
+      <dt>异构数据 <span class="en">Heterogeneous</span></dt>
+      <dd>格式五花八门的资料:Markdown、PDF、网页、代码、聊天记录……你最初的痛点。</dd>
+      <dt>前置元信息 <span class="en">Front-matter</span></dt>
+      <dd>Markdown 顶部 <code>---</code> 之间的键值(标题/标签/日期)。加载时抽出来当元数据。</dd>
+      <dt>归一化 <span class="en">Normalize</span></dt>
+      <dd>把不同格式"洗"成同一种干净结构,去掉语法噪声,只留正文 + 有用标签。</dd>
+      <dt>注册表 / 工厂 <span class="en">Registry / Factory</span></dt>
+      <dd>按文件类型挑对应加载器的小调度表。加新格式 = 往表里加一行。</dd>
+    </dl>
+  </div>
+
+  <h2>为什么需要加载器?</h2>
+  <p>
+    回忆离线管道第一步:<a class="cite" href="0001-rag-pipeline-mental-model.html#win">[L1]</a>
+    <strong>加载</strong> → 分块 → 嵌入 → 入库。前几课我们用的是"示例数据";
+    现在要喂真实资料,可它们<strong>格式各异</strong>——这正是你立项时说的"数据源很乱"。
+  </p>
+  <p>
+    加载器的使命就一句话:<strong>不管进来的是什么格式,出去的都是同一种 <code>Document</code></strong>。
+    后面的分块、嵌入、入库<strong>完全不需要知道</strong>资料原本是 PDF 还是网页——
+    复杂性被挡在了加载这一层。
+  </p>
+  <div class="pipe">
+    <div class="step offline"><b>加载</b>多种格式→统一 Document</div>
+    <div class="step offline"><b>分块</b>Document→Chunks</div>
+    <div class="step offline"><b>嵌入</b>每块→向量</div>
+    <div class="step offline"><b>入库</b>存进向量库</div>
+  </div>
+
+  <h2>亲手试:Markdown → Document</h2>
+  <p>
+    下面是一个真实可用的 <strong>Markdown 加载器</strong>:它抽出顶部 <code>---</code> 里的
+    <strong>front-matter</strong> 当元数据,剥掉 <code>#</code>、<code>**</code>、链接等语法,
+    只留干净正文。改改左边,看右边的 <code>Document</code> 实时变化 👇
+  </p>
+
+  <div class="widget" id="loader">
+    <label for="src">原始 Markdown(带格式噪声)</label>
+    <textarea id="src" style="min-height:9rem">---
+title: 向量库选型笔记
+tags: rag, chroma
+date: 2026-06-21
+---
+
+# 选型结论
+
+我们选用 **Chroma**:本地可持久化,适合[个人知识库](https://example.com)。
+
+- 默认距离度量是 `l2`
+- 也可以改成 `cosine`
+
+> 备注:数据全程留在本地。</textarea>
+
+    <label>加载产物 · 统一的 Document</label>
+    <div class="chunk" id="doc" style="background:#eef2ec;white-space:pre-wrap"></div>
+  </div>
+
+  <h2>同一个出口,多种入口</h2>
+  <p>
+    Markdown 只是第一个。其它格式各写一个加载器,但<strong>产物形状完全一样</strong>——
+    这就是它们能共用后续整条管道的原因:
+  </p>
+  <table class="ref-table">
+    <tr><th>输入格式</th><th>加载器要做的脏活</th><th>统一产物</th></tr>
+    <tr><td>Markdown / 文本</td><td>抽 front-matter、剥语法</td><td rowspan="5"><code>Document</code><br>{ text, metadata }</td></tr>
+    <tr><td>PDF</td><td>按页抽文字(pypdf)</td></tr>
+    <tr><td>网页 HTML</td><td>取正文、扔掉导航/脚本</td></tr>
+    <tr><td>代码仓库</td><td>按文件/函数读,记符号</td></tr>
+    <tr><td>聊天 / 邮件</td><td>按对话/时间聚合</td></tr>
+  </table>
+  <p style="font-size:.88rem;color:var(--ink-soft)">
+    这些"按类型切"的细节,你在 <a href="../reference/chunking-cheatsheet.html">分块速查表</a>
+    的可运行脚本里已经见过——加载器负责<strong>读取 + 归一化</strong>,分块器负责<strong>切分</strong>,两者接力。
+  </p>
+
+  <h2>落到你的项目</h2>
+  <p>
+    "要一个能把来源变成 Document 的东西"是契约,放 <span class="layer">domain</span>;
+    "用 pypdf / HTMLParser 真去读"是 I/O,放 <span class="layer">infrastructure</span>;
+    "按扩展名挑哪个加载器"是一张小注册表:
+  </p>
+  <p style="font-family:var(--mono);font-size:.74rem;background:#f1efe8;padding:.8rem 1rem;border-radius:6px;line-height:1.7">
+    # app/domain/ports.py(领域层 · 契约)<br>
+    class Loader(Protocol):<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;def load(self, path: str) -&gt; Document: ...<br>
+    <br>
+    # app/infrastructure/loaders/markdown_loader.py(基础层 · 真读文件)<br>
+    class MarkdownLoader:&nbsp;&nbsp;# 实现 Loader<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;def load(self, path): ...&nbsp;&nbsp;# 抽 front-matter + 剥语法<br>
+    <br>
+    # 注册表:扩展名 → 加载器(加新格式只动这里)<br>
+    LOADERS = {".md": MarkdownLoader(), ".txt": TextLoader()}
+  </p>
+  <p>
+    记住:<strong>加新数据源 = 写一个新适配器 + 往注册表加一行,核心管道一行不改。</strong>
+    这就是为什么"数据源很乱"不再可怕——乱被关进了加载层。
+  </p>
+
+  <h2>检验一下(凭记忆作答)</h2>
+
+  <div class="quiz" id="q1">
+    <div class="q">1. 面对"各种格式都有"的乱数据,加载器的核心职责是?</div>
+    <button data-correct="true">统一成同一种文档</button>
+    <button>直接算出每段向量</button>
+    <button>决定取回几个结果</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz" id="q2">
+    <div class="q">2. 加载器真正读文件、解析格式(带 I/O),这种活该放哪层?</div>
+    <button data-correct="true">基础 infrastructure</button>
+    <button>领域 domain</button>
+    <button>应用 application</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz" id="q3">
+    <div class="q">3. 新增一种文件类型(如 PDF),最符合架构的做法是?</div>
+    <button data-correct="true">加一个新的适配器</button>
+    <button>改动领域层的模型</button>
+    <button>重写整个问答用例</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="source">
+    <span class="tag">Primary source · 先读这个</span>
+    <p style="margin:.5rem 0 0">
+      <a href="https://docs.langchain.com/oss/python/integrations/document_loaders">LangChain · Document Loaders</a>
+      一句话点题:"加载器提供<em>统一接口</em>,把不同来源读成同一种 <code>Document</code>,
+      确保数据无论来源都被一致处理"——正是你 <code>Loader</code> 端口要照的镜子(它们共享 <code>load()</code> 接口)。
+      切分细节对照你已有的 <a href="../reference/chunking-cheatsheet.html">分块速查表</a> 可运行脚本。
+    </p>
+  </div>
+
+  <p class="teacher">
+    <strong>我是你的老师。</strong>"PDF 扫描件没文字层怎么办?""网页广告怎么过滤干净?"
+    "front-matter 该存哪些字段?"——这些都问我。
+    下一课 <code>0008</code> 会带你给真实文件(先 Markdown/文本)写出能跑的加载器,接进 <code>IngestDocument</code> 用例,
+    第一次把<strong>你自己的资料</strong>喂进库。
+  </p>
+
+  <p class="nav">
+    上一课 <a href="0006-rag-qa.html">0006 RAG 问答</a> ·
+    工作区 <a href="../MISSION.md">MISSION</a> · <a href="../RESOURCES.md">RESOURCES</a> · <a href="../NOTES.md">NOTES</a>
+  </p>
+
+</article>
+
+<script>
+  // ---- live Markdown loader: messy markdown -> uniform Document ----
+  var src = document.getElementById('src');
+  var docBox = document.getElementById('doc');
+
+  function parseFrontMatter(text) {
+    var meta = {};
+    var body = text;
+    var m = text.match(/^---\s*\n([\s\S]*?)\n---\s*\n?/);
+    if (m) {
+      m[1].split('\n').forEach(function (line) {
+        var kv = line.match(/^([\w-]+)\s*:\s*(.*)$/);
+        if (kv) meta[kv[1]] = kv[2].trim();
+      });
+      body = text.slice(m[0].length);
+    }
+    return { meta: meta, body: body };
+  }
+
+  function stripMarkdown(md) {
+    return md
+      .replace(/`{1,3}([^`]*)`{1,3}/g, '$1')      // code spans/fences
+      .replace(/!\[[^\]]*\]\([^)]*\)/g, '')        // images
+      .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')     // links -> text
+      .replace(/^\s{0,3}#{1,6}\s+/gm, '')          // headings
+      .replace(/^\s{0,3}>\s?/gm, '')               // blockquotes
+      .replace(/^\s*[-*+]\s+/gm, '· ')             // list bullets
+      .replace(/\*\*([^*]+)\*\*/g, '$1')           // bold
+      .replace(/\*([^*]+)\*/g, '$1')               // italic
+      .replace(/\n{3,}/g, '\n\n')                   // collapse blank lines
+      .trim();
+  }
+
+  function render() {
+    var parsed = parseFrontMatter(src.value);
+    var text = stripMarkdown(parsed.body);
+    var meta = Object.assign({ source: 'note.md', type: 'markdown' }, parsed.meta);
+
+    var metaLines = Object.keys(meta).map(function (k) {
+      return '    ' + k + ': "' + meta[k] + '"';
+    }).join('\n');
+
+    docBox.textContent =
+      'Document {\n'
+      + '  id: "note.md#1",\n'
+      + '  metadata: {\n' + metaLines + '\n  },\n'
+      + '  text: """\n'
+      + text.split('\n').map(function (l) { return '    ' + l; }).join('\n')
+      + '\n  """\n}';
+  }
+
+  src.addEventListener('input', render);
+  render();
+
+  // ---- quizzes ----
+  document.querySelectorAll('.quiz').forEach(function (quiz) {
+    var fb = quiz.querySelector('.feedback');
+    quiz.querySelectorAll('button').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        if (quiz.dataset.done) return;
+        var ok = btn.dataset.correct === 'true';
+        btn.classList.add(ok ? 'correct' : 'wrong');
+        if (!ok) {
+          var right = quiz.querySelector('button[data-correct="true"]');
+          if (right) right.classList.add('correct');
+        }
+        fb.textContent = ok ? '\u2713 \u5bf9\u4e86\u3002'
+          : '\u518d\u60f3\u60f3\u201c\u591a\u79cd\u5165\u53e3 / \u540c\u4e00\u51fa\u53e3 / \u52a0\u9002\u914d\u5668\u201d\u2014\u2014\u6b63\u786e\u7b54\u6848\u5df2\u9ad8\u4eae\u3002';
+        quiz.dataset.done = '1';
+      });
+    });
+  });
+</script>
+</body>
+</html>

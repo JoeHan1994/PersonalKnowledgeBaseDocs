@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>0004 · 向量库:让"找最近的几个"快如闪电</title>
+  <link rel="stylesheet" href="../assets/lesson.css" />
+</head>
+<body>
+<article class="lesson">
+
+  <p class="eyebrow">Lesson 0004 · 个人知识库</p>
+  <h1>向量库:让"找最近的几个"快如闪电</h1>
+  <p class="subtitle">存的是"块 + 向量 + 元数据";取的是"离问题最近的 top-k"。</p>
+
+  <div class="win">
+    <strong>这一课的小胜利:</strong>你能在画布上点一个"问题",亲眼看着向量库
+    <strong>挑出离它最近的 k 个块</strong>并连线;然后说清 Chroma 存什么、
+    <code>query</code> 返回什么,并把它落成你项目 <span class="layer">infrastructure</span> 的
+    <code>VectorStore</code> 适配器。
+  </div>
+
+  <div class="terms">
+    <p class="terms-head">先认词 · 本课会反复出现</p>
+    <dl>
+      <dt>向量库 <span class="en">Vector Store / DB</span></dt>
+      <dd>专门存"向量 + 原文 + 元数据",并能飞快找最近邻的数据库。本课用 Chroma。</dd>
+      <dt>最近邻 / top-k <span class="en">Nearest Neighbours</span></dt>
+      <dd>离问题向量"最近"的那几个块。取前 k 个(如 top-3)当答题的参考资料。</dd>
+      <dt>ANN 近似最近邻 <span class="en">Approximate NN</span></dt>
+      <dd>不逐个死算,而是用聪明的索引<strong>快速猜出</strong>最近的几个。牺牲一丁点精度,换巨大速度。</dd>
+      <dt>HNSW <span class="en">分层小世界图</span></dt>
+      <dd>一种主流 ANN 索引。把向量连成"多层高速公路图",查询时先上高层快速逼近,再下层细找。</dd>
+      <dt>集合 <span class="en">Collection</span></dt>
+      <dd>Chroma 里装同一批数据的"表/容器"。建集合时顺便选用哪种距离度量(l2/cosine/ip)。</dd>
+      <dt>元数据 <span class="en">Metadata</span></dt>
+      <dd>跟每块一起存的标签(来源、页码…),检索时可据此<strong>过滤</strong>和标出处。</dd>
+      <dt>端口 / 适配器 <span class="en">Port / Adapter</span></dt>
+      <dd>端口=领域层声明"我要个能存能查的向量库";适配器=基础层用 Chroma 真正实现它。换库不动主逻辑。</dd>
+    </dl>
+  </div>
+
+  <h2>向量库到底是什么?</h2>
+  <p>
+    回忆离线管道:<a class="cite" href="0001-rag-pipeline-mental-model.html#win">[L1]</a>
+    加载 → 分块 <a class="cite" href="0002-chunking.html">[L2]</a> → 嵌入
+    <a class="cite" href="0003-embeddings.html">[L3]</a> → <strong>入库</strong>。
+    向量库就是这个"库"——它替你存三样东西、并把<strong>最近邻检索</strong>做到极快:
+  </p>
+  <p>
+    · <strong>向量</strong>:每个块的嵌入(那串浮点数)。<br>
+    · <strong>原文</strong>:块的文本本身(检索回来要当出处喂给模型)。<br>
+    · <strong>元数据</strong>:来源、页码、标签……用于过滤和标注出处。
+  </p>
+
+  <h2>检索 = 在向量空间里找最近的几个</h2>
+  <p>
+    在下面的画布上,每个圆点是一个<strong>已存的块</strong>。
+    点任意位置放下你的<strong>问题</strong>(也被嵌成一个点),向量库要做的就一件事:
+    <strong>挑出离它最近的 k 个</strong>当出处。拖 <code>k</code> 试试 👇
+  </p>
+
+  <div class="widget" id="ann">
+    <canvas id="cv" width="520" height="300"
+      style="display:block;width:100%;background:#fff;border:1px solid var(--rule);border-radius:8px;cursor:crosshair"></canvas>
+
+    <div class="controls">
+      <div class="control">
+        <label for="k">top-k(取回几个块)<output id="kOut">3</output></label>
+        <input type="range" id="k" min="1" max="6" step="1" value="3" />
+      </div>
+    </div>
+
+    <div class="stat" id="stat">在画布上点一下,放下你的"问题"。</div>
+  </div>
+
+  <h2>为什么能"秒级"?近似最近邻(ANN)</h2>
+  <p>
+    库里几十万、几百万个向量,逐个算距离太慢。真正的向量库用
+    <strong>HNSW</strong> 这类<strong>近似最近邻(ANN)</strong>索引——
+    把向量组织成"多层高速公路图",查询时从高层快速跳到目标附近,再逐层细找。<a class="cite" href="#s1">[1]</a>
+  </p>
+  <p>
+    代价:它是<strong>近似</strong>的,极偶尔会漏掉真正的第一名。
+    回报:在海量向量下依然<strong>毫秒级</strong>。对知识库检索,这笔交易几乎总是划算的。
+  </p>
+
+  <h2>Chroma 长什么样</h2>
+  <p>
+    我们已选定 Chroma <a class="cite" href="0003-embeddings.html">[L3]</a>。它的接口就两个核心动作——
+    <strong>加(add)</strong> 和 <strong>查(query)</strong>:
+  </p>
+  <p style="font-family:var(--mono);font-size:.76rem;background:#f1efe8;padding:.8rem 1rem;border-radius:6px;line-height:1.7">
+    collection = client.create_collection(<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;name="kb",<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;configuration={"hnsw": {"space": "cosine"}},&nbsp;&nbsp;# l2(默认)/ cosine / ip<br>
+    )<br>
+    collection.add(&nbsp;&nbsp;&nbsp;&nbsp;# 存:向量 + 原文 + 元数据 + id<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;ids=["c1"], embeddings=[[...]],<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;documents=["这一块的原文"], metadatas=[{"source": "note.md", "page": 1}],<br>
+    )<br>
+    res = collection.query(&nbsp;# 查:给问题向量,要回最近的 k 个<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;query_embeddings=[[...]], n_results=3,<br>
+    )&nbsp;&nbsp;# res 里有 documents / metadatas / distances
+  </p>
+
+  <h2>落到你的项目</h2>
+  <p>
+    依赖向内:<span class="layer">domain</span> 只声明<strong>要一个能存能查的库</strong>(端口),
+    至于"是 Chroma 还是别的",由 <span class="layer">infrastructure</span> 的适配器决定。
+    这样将来换库不动核心逻辑:
+  </p>
+  <p style="font-family:var(--mono);font-size:.76rem;background:#f1efe8;padding:.8rem 1rem;border-radius:6px;line-height:1.7">
+    # app/domain/ports.py(领域层 · 只声明契约)<br>
+    class VectorStore(Protocol):<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;async def add(self, chunks: list[Chunk], vectors: list[list[float]]) -&gt; None: ...<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;async def query(self, vector: list[float], k: int) -&gt; list[Chunk]: ...<br>
+    <br>
+    # app/infrastructure/vectorstore/chroma_store.py(基础层 · 真正调 Chroma)<br>
+    class ChromaVectorStore:&nbsp;&nbsp;# 实现上面的契约<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;...
+  </p>
+  <p>
+    记住分界:<strong>"要一个向量库"是 <span class="layer">domain</span> 的接口;
+    "用 Chroma 实现"是 <span class="layer">infrastructure</span> 的适配器。</strong>
+    下一课会用它做<strong>检索</strong>:把问题嵌入、查 top-k、组装成"带出处的上下文"。
+  </p>
+
+  <h2>检验一下(凭记忆作答)</h2>
+
+  <div class="quiz" id="q1">
+    <div class="q">1. 向量库在检索时,本质上是在做什么?</div>
+    <button data-correct="true">取最近的若干个块</button>
+    <button>把全文重新算嵌入</button>
+    <button>给每块重新做分块</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz" id="q2">
+    <div class="q">2. HNSW 这类"近似最近邻"索引,用一点精度换来了什么?</div>
+    <button data-correct="true">大数据量下的飞快</button>
+    <button>永远完全精确结果</button>
+    <button>明显更小磁盘占用</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz" id="q3">
+    <div class="q">3. 真正调用 Chroma 存取数据的适配器,该放在你项目哪一层?</div>
+    <button data-correct="true">基础 infrastructure</button>
+    <button>领域 domain</button>
+    <button>应用 application</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="source">
+    <span class="tag">Primary source · 先读这个</span>
+    <p style="margin:.5rem 0 0" id="s1">
+      <a href="https://docs.trychroma.com/docs/overview/getting-started">Chroma · Getting Started</a>
+      用十几行跑通 add/query;<a href="https://docs.trychroma.com/docs/collections/configure">Configure Collections</a>
+      讲清 <code>hnsw:space</code> 的 <code>l2/cosine/ip</code> 与 HNSW 参数。配
+      <a href="https://ollama.com/blog/embedding-models">Ollama 嵌入示例</a>看"本地嵌入 + Chroma"端到端真实代码。
+    </p>
+  </div>
+
+  <p class="teacher">
+    <strong>我是你的老师。</strong>"几万条数据要不要调 HNSW 参数?""持久化到磁盘还是内存?"
+    "元数据该存哪些字段才方便过滤?"——这些都问我。
+    度量怎么选见 <a href="../reference/similarity-cheatsheet.html">相似度速查表</a>。
+    下一课 <code>0005 检索</code> 会把"嵌问题 → 查 top-k → 拼出处"串成一个用例。
+  </p>
+
+  <p class="nav">
+    上一课 <a href="0003-embeddings.html">0003 嵌入</a> ·
+    工作区 <a href="../MISSION.md">MISSION</a> · <a href="../RESOURCES.md">RESOURCES</a> · <a href="../NOTES.md">NOTES</a>
+  </p>
+
+</article>
+
+<script>
+  // ---- 2D nearest-neighbour playground ----
+  var cv = document.getElementById('cv');
+  var ctx = cv.getContext('2d');
+  var kEl = document.getElementById('k');
+  var kOut = document.getElementById('kOut');
+  var stat = document.getElementById('stat');
+
+  var W = cv.width, H = cv.height;
+  // pre-seeded "stored chunks" (label = a fake topic)
+  var points = [
+    { x: 80, y: 70, t: '安装步骤' },
+    { x: 140, y: 200, t: '配置示例' },
+    { x: 250, y: 110, t: '报错排查' },
+    { x: 330, y: 230, t: '版本说明' },
+    { x: 410, y: 90, t: 'API 参考' },
+    { x: 460, y: 200, t: '性能调优' },
+    { x: 200, y: 60, t: '快速上手' },
+    { x: 300, y: 160, t: '常见问题' },
+    { x: 120, y: 130, t: '术语表' },
+    { x: 420, y: 150, t: '更新日志' }
+  ];
+  var query = null;
+
+  function dist(a, b) {
+    return Math.sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y));
+  }
+
+  function render() {
+    var k = parseInt(kEl.value, 10);
+    kOut.textContent = k;
+    ctx.clearRect(0, 0, W, H);
+
+    var near = [];
+    if (query) {
+      near = points
+        .map(function (p, i) { return { i: i, d: dist(p, query) }; })
+        .sort(function (a, b) { return a.d - b.d; })
+        .slice(0, k)
+        .map(function (o) { return o.i; });
+      // lines to neighbours
+      ctx.strokeStyle = 'rgba(122,31,31,.35)';
+      ctx.lineWidth = 1.5;
+      near.forEach(function (i) {
+        ctx.beginPath();
+        ctx.moveTo(query.x, query.y);
+        ctx.lineTo(points[i].x, points[i].y);
+        ctx.stroke();
+      });
+    }
+
+    // stored chunks
+    points.forEach(function (p, i) {
+      var hit = near.indexOf(i) !== -1;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, hit ? 9 : 6, 0, Math.PI * 2);
+      ctx.fillStyle = hit ? '#7a1f1f' : '#c9c3b4';
+      ctx.fill();
+      ctx.fillStyle = hit ? '#7a1f1f' : '#8a8678';
+      ctx.font = (hit ? 'bold ' : '') + '11px sans-serif';
+      ctx.fillText(p.t, p.x + 11, p.y + 4);
+    });
+
+    // query point
+    if (query) {
+      ctx.beginPath();
+      ctx.arc(query.x, query.y, 7, 0, Math.PI * 2);
+      ctx.fillStyle = '#2f5d3a';
+      ctx.fill();
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.fillStyle = '#2f5d3a';
+      ctx.font = 'bold 12px sans-serif';
+      ctx.fillText('问题', query.x + 10, query.y - 8);
+
+      var labels = near.map(function (i) { return points[i].t; });
+      stat.innerHTML = '取回最近 <strong>' + k + '</strong> 个块作为出处:<strong>'
+        + labels.join(' · ') + '</strong>';
+    } else {
+      stat.textContent = '在画布上点一下,放下你的"问题"。';
+    }
+  }
+
+  cv.addEventListener('click', function (e) {
+    var r = cv.getBoundingClientRect();
+    // canvas is CSS-stretched to 100% width — map click back to internal coords
+    query = {
+      x: (e.clientX - r.left) * (W / r.width),
+      y: (e.clientY - r.top) * (H / r.height)
+    };
+    render();
+  });
+  kEl.addEventListener('input', render);
+  render();
+
+  // ---- quizzes ----
+  document.querySelectorAll('.quiz').forEach(function (quiz) {
+    var fb = quiz.querySelector('.feedback');
+    quiz.querySelectorAll('button').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        if (quiz.dataset.done) return;
+        var ok = btn.dataset.correct === 'true';
+        btn.classList.add(ok ? 'correct' : 'wrong');
+        if (!ok) {
+          var right = quiz.querySelector('button[data-correct="true"]');
+          if (right) right.classList.add('correct');
+        }
+        fb.textContent = ok ? '\u2713 \u5bf9\u4e86\u3002'
+          : '\u518d\u60f3\u60f3\u201c\u5b58\u4ec0\u4e48 / \u67e5\u4ec0\u4e48 / \u8c01\u6765\u5b9e\u73b0\u201d\u2014\u2014\u6b63\u786e\u7b54\u6848\u5df2\u9ad8\u4eae\u3002';
+        quiz.dataset.done = '1';
+      });
+    });
+  });
+</script>
+</body>
+</html>

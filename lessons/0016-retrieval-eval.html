@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>0016 · 检索评测:用数字证明重排有用</title>
+  <link rel="stylesheet" href="../assets/lesson.css" />
+</head>
+<body>
+<article class="lesson">
+
+  <p class="eyebrow">Lesson 0016 · 个人知识库 · 量化</p>
+  <h1>检索评测:别凭感觉,用数字说话</h1>
+  <p class="subtitle">攒一个小黄金集,算命中率/MRR/召回率;重排到底提了多少,一目了然。</p>
+
+  <div class="win">
+    <strong>这一课的小胜利:</strong>你能攒一个<strong>黄金集</strong>(几十条"问题 + 正确出处"),
+    写三个小函数算 <strong>命中率@k / MRR / 召回率@k</strong>,
+    然后把"只检索"和"检索+重排"(第 14 课)各跑一遍——
+    指标涨了多少<strong>看得见</strong>。从此调参不再靠玄学,靠数字。
+  </div>
+
+  <div class="terms">
+    <p class="terms-head">先认词 · 本课会反复出现</p>
+    <dl>
+      <dt>黄金集 <span class="en">golden set</span></dt>
+      <dd>人工标好的"标准答案":每个问题配上<em>哪些 chunk 才算正确出处</em>。评测的尺子,质量决定一切。</dd>
+      <dt>命中率@k <span class="en">Hit / Accuracy@k</span></dt>
+      <dd>前 k 条里<em>只要有一条</em>正确,就算这题命中。统计命中的题占比。最直观的"找没找到"。</dd>
+      <dt>MRR <span class="en">Mean Reciprocal Rank</span></dt>
+      <dd>平均倒数排名:正确项排第 1 得 1 分、第 2 得 1/2、第 3 得 1/3…取平均。<em>越靠前越值钱</em>。</dd>
+      <dt>召回率@k <span class="en">Recall@k</span></dt>
+      <dd>前 k 条里<em>捞回了几成</em>该捞的正确出处。一题有多个正确答案时尤其看它。</dd>
+      <dt>离线评测 <span class="en">offline eval</span></dt>
+      <dd>不打扰用户,拿固定黄金集批量跑出分数。改一版就重测一版,可对比、可复现。</dd>
+      <dt>基线对比 <span class="en">A/B baseline</span></dt>
+      <dd>把"老做法(只检索)"当基线,新做法(加重排)和它比。涨了才留,没涨就别加复杂度。</dd>
+    </dl>
+  </div>
+
+  <h2>三把尺子,量同一件事的不同侧面</h2>
+  <p>
+    <strong>命中率</strong>问"找到没"(粗),<strong>MRR</strong>问"排得够不够靠前"(在乎名次),
+    <strong>召回率</strong>问"该找的捞回几成"(在乎全不全)。
+    重排不增删候选、只<em>重新排序</em>,所以它最该让 <strong>MRR</strong> 涨——把对的顶到前面。
+  </p>
+  <div class="pipe">
+    <div class="step offline"><b>黄金集</b> 问题+正确出处</div>
+    <div class="step online"><b>跑检索</b> 拿每题 top-k</div>
+    <div class="step online"><b>算指标</b> Hit / MRR / Recall</div>
+    <div class="step offline"><b>对比</b> 基线 vs +重排</div>
+  </div>
+
+  <h2>亲手试:跑一次评测,看重排提了多少</h2>
+  <p>
+    点<strong>跑评测</strong>,左边是"只检索"基线,右边是"检索+重排"。注意 MRR 的变化最明显
+    ——重排把正确出处往前顶了。(数字是<strong>诚实替身</strong>,真实算法见下方代码。)
+  </p>
+
+  <div class="widget">
+    <p style="margin:0 0 .7rem">
+      <button class="run" id="run">跑评测</button>
+      <span class="stat" id="stat">就绪 · 黄金集 20 题</span>
+    </p>
+    <table class="metrics">
+      <thead><tr><th>指标</th><th>只检索(基线)</th><th>检索 + 重排</th><th>提升</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+
+  <h2>落到你的项目:一个黄金集 + 三个函数</h2>
+
+  <p><strong>① 黄金集</strong> — 你自己的问题配自己的正确 chunk id:</p>
+  <pre class="code">
+# tests/eval/golden.py
+GOLDEN = [
+    {"q": "分块为什么不能切太大?", "relevant": {"chunking.md#2", "chunking.md#5"}},
+    {"q": "嵌入是什么?",         "relevant": {"embeddings.md#0"}},
+    {"q": "什么时候该认怂?",     "relevant": {"retrieve.md#3"}},
+    # … 攒几十条,覆盖你真正会问的问题
+]
+  </pre>
+
+  <p><strong>② 三把尺子</strong> — 纯函数,给一题的"命中 id 排序"打分:</p>
+  <pre class="code">
+# tests/eval/metrics.py
+def hit_at_k(ranked_ids, relevant, k):
+    return 1.0 if set(ranked_ids[:k]) & relevant else 0.0
+
+def reciprocal_rank(ranked_ids, relevant):
+    for i, cid in enumerate(ranked_ids, start=1):
+        if cid in relevant:
+            return 1.0 / i          # 第 1 名→1.0,第 2 名→0.5 …
+    return 0.0
+
+def recall_at_k(ranked_ids, relevant, k):
+    hits = set(ranked_ids[:k]) & relevant
+    return len(hits) / len(relevant)   # 该捞的捞回几成
+  </pre>
+
+  <p><strong>③ 评测跑批</strong> — 同一黄金集,基线 vs 重排各跑一遍:</p>
+  <pre class="code">
+# tests/eval/run_eval.py
+def evaluate(retrieve, k=3):
+    hit = mrr = rec = 0.0
+    for item in GOLDEN:
+        ranked = [c.id for c in retrieve(item["q"], k=10)]   # 你的读路径
+        hit += hit_at_k(ranked, item["relevant"], k)
+        mrr += reciprocal_rank(ranked, item["relevant"])
+        rec += recall_at_k(ranked, item["relevant"], k)
+    n = len(GOLDEN)
+    return {"hit@%d" % k: hit/n, "mrr": mrr/n, "recall@%d" % k: rec/n}
+
+base = evaluate(retrieve_without_rerank)   # 基线
+ours = evaluate(retrieve_with_rerank)      # 第 14 课的重排
+print(base, ours)                          # 涨了才留重排
+  </pre>
+  <p class="aside">
+    想要工业级、还带 NDCG/Precision@k 的现成评测器?用 sentence-transformers 的
+    <code>InformationRetrievalEvaluator</code>:喂 queries、corpus、relevant_docs,它一次算齐
+    MRR@k / Recall@k / Accuracy@k。原理和上面三个小函数完全一致。
+  </p>
+
+  <h2>检验一下(凭记忆作答)</h2>
+
+  <div class="quiz" id="qa">
+    <div class="q">1. MRR 这把尺子,最在乎的是什么?</div>
+    <button data-correct="true">正确项排得多靠前</button>
+    <button>总共召回了多少条</button>
+    <button>答案生成得快不快</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz" id="qb">
+    <div class="q">2. 想评测检索好坏,动手前必须先备好什么?</div>
+    <button data-correct="true">问题与正确出处对</button>
+    <button>一台更强的显卡先</button>
+    <button>把模型重新训练过</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz" id="qc">
+    <div class="q">3. 加了重排到底有没有用,该靠什么下结论?</div>
+    <button data-correct="true">看指标有没有变好</button>
+    <button>凭感觉答得顺不顺</button>
+    <button>数代码改了多少行</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="source">
+    <span class="tag">Primary source · 先读这个</span>
+    <p style="margin:.5rem 0 0">
+      <a href="https://www.sbert.net/docs/package_reference/sentence_transformer/evaluation.html#informationretrievalevaluator">SentenceTransformers · InformationRetrievalEvaluator</a>
+      明确定义这套 IR 评测:给定 queries、corpus 和 relevant_docs(每个 query 对应一组正确文档 id),
+      对每条 query 取 top-k,计算 <strong>MRR@k、Recall@k、Accuracy@k</strong>(=命中率)与 NDCG——
+      正是本课三个小函数的工业版。
+    </p>
+  </div>
+
+  <p class="teacher">
+    <strong>我是你的老师。</strong>"黄金集多少条才够、怎么标才省力?""指标互相打架(命中涨、召回跌)信哪个?"
+    "想把评测也塞进 CI、每次提交出一张分数表怎么做?"——都问我。
+    你已经攒下完整的一套能力:<strong>建库、问答、扩源、提准、回归、评测</strong>。
+    后续我们会把这些通过 <strong>UI 可视化</strong>逐个落地;你也可以随时说一个方向,我们继续。
+  </p>
+
+  <p class="nav">
+    上一课 <a href="0015-acceptance-tests.html">0015 自动化验收</a> ·
+    工作区 <a href="../MISSION.md">MISSION</a> · <a href="../RESOURCES.md">RESOURCES</a> · <a href="../NOTES.md">NOTES</a>
+  </p>
+
+</article>
+
+<script>
+  // ---- eval demo: baseline vs +rerank (honest stand-in numbers) ----
+  var METRICS = [
+    { key: '命中率@3', base: 0.70, rr: 0.85 },
+    { key: 'MRR',      base: 0.52, rr: 0.78 },
+    { key: '召回率@3', base: 0.61, rr: 0.74 }
+  ];
+
+  var rows = document.getElementById('rows');
+  var statBox = document.getElementById('stat');
+
+  function blank() {
+    rows.innerHTML = '';
+    METRICS.forEach(function (m) {
+      var tr = document.createElement('tr');
+      tr.innerHTML = '<td>' + m.key + '</td><td class="b">—</td><td class="r">—</td><td class="d">—</td>';
+      rows.appendChild(tr);
+    });
+  }
+
+  function run() {
+    statBox.textContent = '评测中…';
+    blank();
+    METRICS.forEach(function (m, i) {
+      setTimeout(function () {
+        var tr = rows.children[i];
+        var up = ((m.rr - m.base) * 100).toFixed(0);
+        tr.querySelector('.b').textContent = m.base.toFixed(2);
+        tr.querySelector('.r').textContent = m.rr.toFixed(2);
+        tr.querySelector('.r').classList.add('good');
+        tr.querySelector('.d').innerHTML = '<span class="up">+' + up + ' 分</span>';
+        if (i === METRICS.length - 1) statBox.textContent = '✓ 完成 · 重排让 MRR 提升最明显';
+      }, (i + 1) * 420);
+    });
+  }
+
+  document.getElementById('run').addEventListener('click', run);
+  blank();
+
+  // ---- quizzes ----
+  document.querySelectorAll('.quiz').forEach(function (quiz) {
+    var fb = quiz.querySelector('.feedback');
+    quiz.querySelectorAll('button').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        if (quiz.dataset.done) return;
+        var ok = btn.dataset.correct === 'true';
+        btn.classList.add(ok ? 'correct' : 'wrong');
+        if (!ok) {
+          var right = quiz.querySelector('button[data-correct="true"]');
+          if (right) right.classList.add('correct');
+        }
+        fb.textContent = ok
+          ? '\u2713 \u5bf9\u4e86\u3002'
+          : '\u518d\u60f3\u60f3\u201c\u9760\u524d=MRR / \u5148\u5907\u9ec4\u91d1\u96c6 / \u770b\u6307\u6807\u201d\u2014\u2014\u6b63\u786e\u7b54\u6848\u5df2\u9ad8\u4eae\u3002';
+        quiz.dataset.done = '1';
+      });
+    });
+  });
+</script>
+
+<style>
+  /* lesson-local styles (promote to assets if reused) */
+  pre.code {
+    font-family: var(--mono); font-size: .73rem; line-height: 1.7;
+    background: #f1efe8; padding: .8rem 1rem; border-radius: 6px;
+    overflow-x: auto; white-space: pre; margin: .6rem 0 1rem;
+  }
+  .aside { font-size: .86rem; opacity: .82; border-left: 3px solid var(--accent); padding-left: .8rem; }
+  button.run { font-family: var(--serif); font-size: .92rem; cursor: pointer;
+    padding: .42rem .9rem; border-radius: 6px; border: 1px solid var(--accent);
+    background: var(--accent); color: #fff; }
+  .stat { font-family: var(--mono); font-size: .82rem; margin-left: .6rem; opacity: .8; }
+  table.metrics { width: 100%; border-collapse: collapse; font-size: .86rem; }
+  table.metrics th, table.metrics td { text-align: left; padding: .45rem .6rem;
+    border-bottom: 1px solid rgba(0,0,0,.1); }
+  table.metrics th { font-family: var(--serif); font-weight: 600; opacity: .8; }
+  table.metrics td.b, table.metrics td.r, table.metrics td.d { font-family: var(--mono); }
+  table.metrics td.r.good { color: var(--good); font-weight: 600; }
+  .up { color: var(--good); font-family: var(--mono); font-size: .8rem; }
+</style>
+</body>
+</html>

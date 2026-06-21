@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>0002 · 分块:把长文切成可检索的小段</title>
+  <link rel="stylesheet" href="../assets/lesson.css" />
+</head>
+<body>
+<article class="lesson">
+
+  <p class="eyebrow">Lesson 0002 · 个人知识库</p>
+  <h1>分块:把长文切成可检索的小段</h1>
+  <p class="subtitle">检索的质量,从这一步就被决定了。</p>
+
+  <div class="win">
+    <strong>这一课的小胜利:</strong>你能亲手调 <code>chunk_size</code> 和 <code>overlap</code> 两个旋钮、
+    实时看到一段文字被怎样切开,并说清"为什么要重叠"——然后把这套规则写成你项目里
+    <span class="layer">domain</span> 的 <code>Chunk</code> 概念。
+  </div>
+
+  <div class="terms">
+    <p class="terms-head">先认词 · 本课会反复出现</p>
+    <dl>
+      <dt>分块 / 块 <span class="en">Chunk</span></dt>
+      <dd>把长文章切成的一小段。它是知识库里<strong>检索和引用的最小单位</strong>——以后查出来、给出处,都是按"块"。</dd>
+      <dt>chunk_size <span class="en">块大小</span></dt>
+      <dd>每一块多长(按字符数算)。太大→一块混太多主题;太小→句子被切碎读不懂。</dd>
+      <dt>overlap <span class="en">重叠</span></dt>
+      <dd>相邻两块之间<strong>共享的一小段</strong>。防止"一句话被劈成两半,谁也读不全"。常取块大小的 10%–20%。</dd>
+      <dt>元数据 <span class="en">Metadata</span></dt>
+      <dd>跟着每块一起存的"标签信息":来源文件、页码、标题路径等。检索后用来标出处、做过滤。</dd>
+      <dt>领域层 <span class="en">domain</span></dt>
+      <dd>项目里放<strong>纯数据和规则</strong>的最内层,不碰文件/网络。<code>Chunk</code> 这种纯数据就住这儿。</dd>
+    </dl>
+  </div>
+
+  <h2>为什么必须分块?</h2>
+  <p>
+    回忆上一课的离线管道:<a class="cite" href="0001-rag-pipeline-mental-model.html#win">[L1]</a>
+    加载 → <strong>分块</strong> → 嵌入 → 入库。为什么不整篇文章算一个向量?三个原因:
+  </p>
+  <p>
+    · <strong>嵌入有上限</strong>:嵌入模型一次能"读"的文本有限,太长会被截断,信息丢失。<br>
+    · <strong>检索要精准</strong>:你问一个细节,系统应只取出<em>相关的那一小段</em>当出处,而不是整篇噪声。<br>
+    · <strong>上下文要省</strong>:塞给生成模型的内容越少越准、越快、越省。
+  </p>
+  <p>
+    所以"块"是知识库里<strong>检索和引用的最小单位</strong>。块切得好,后面全顺;切得烂,嵌入再强也救不回。
+  </p>
+
+  <h2>两个旋钮:大小与重叠</h2>
+  <p>
+    最常用的策略叫<strong>固定大小+重叠</strong>:按长度切块,相邻块之间留一段<strong>重叠</strong>。
+    重叠是为了防止"一句话被劈成两半,谁也读不懂"——让跨边界的语义在两块里都各留一份。<a class="cite" href="#s1">[1]</a>
+    亲手试试 👇
+  </p>
+
+  <div class="widget" id="chunker">
+    <label for="txt">输入文本(可换成你自己的资料)</label>
+    <textarea id="txt">检索增强生成(RAG)把模型的参数化记忆和可检索的非参数化记忆结合起来。离线阶段,我们加载资料、切块、为每块计算嵌入向量,再连同元数据一起存入向量库。在线阶段,用户的问题也被嵌入成向量,系统检索出最相似的若干块,把这些原文和问题拼成提示交给模型,让它据此带出处地作答。分块的质量直接决定检索的质量:块太大,一个向量要代表太多主题,检索不精准;块太小,语义被切碎,单块读不懂。重叠则用来保住跨边界的句子。</textarea>
+
+    <div class="controls">
+      <div class="control">
+        <label for="size">chunk_size(字符)<output id="sizeOut">120</output></label>
+        <input type="range" id="size" min="40" max="240" step="10" value="120" />
+      </div>
+      <div class="control">
+        <label for="ov">overlap(字符)<output id="ovOut">20</output></label>
+        <input type="range" id="ov" min="0" max="80" step="5" value="20" />
+      </div>
+    </div>
+
+    <div class="stat" id="stat"></div>
+    <div class="chunks" id="out"></div>
+  </div>
+
+  <h2>怎么选这两个数?</h2>
+  <p>
+    没有唯一正确值,但有经验区间:<code>chunk_size</code> 常取几百字符(对应一两段话);
+    <code>overlap</code> 常取 <code>chunk_size</code> 的 <strong>10%–20%</strong>。
+    把上面滑块拉到极端,你会直观感到两端的代价:
+  </p>
+  <p>
+    · 块<strong>太大</strong> → 一个向量背负多个主题,检索"什么都沾一点、什么都不准"。<br>
+    · 块<strong>太小</strong> → 句子被劈碎,单块缺乏上下文,模型读不懂。<br>
+    · <strong>零重叠</strong> → 跨边界的关键句两边都不完整,检索可能两块都漏。
+  </p>
+
+  <h2>落到你的项目</h2>
+  <p>
+    分块产出的"块"是纯数据,没有任何 I/O——所以它属于 <span class="layer">domain</span>:
+  </p>
+  <p style="font-family:var(--mono);font-size:.8rem;background:#f1efe8;padding:.8rem 1rem;border-radius:6px">
+    # app/domain/models.py(领域层 · 纯数据)<br>
+    @dataclass(frozen=True)<br>
+    class Chunk:<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;document_id: str<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;index: int&nbsp;&nbsp;&nbsp;&nbsp;# 第几块,用于还原顺序<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;text: str<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;# 之后会加 embedding + 出处元数据
+  </p>
+  <p>
+    而"<em>怎么切</em>"这套算法,会在第 4–6 课接进来时,作为一个可替换的策略放到
+    <span class="layer">application</span> / <span class="layer">infrastructure</span>——
+    因为不同数据源(代码 vs 散文)可能需要不同切法。先记住:<strong>数据(Chunk)在内层,算法在外层。</strong>
+  </p>
+
+  <h2>检验一下(凭记忆作答)</h2>
+
+  <div class="quiz" id="q1">
+    <div class="q">1. <code>overlap</code>(块间重叠)主要是为了解决什么?</div>
+    <button data-correct="true">跨边界句子两块都完整</button>
+    <button>让嵌入算得明显更快些</button>
+    <button>把向量库体积压得更小</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz" id="q2">
+    <div class="q">2. 块切得<strong>太大</strong>,检索时最典型的毛病是?</div>
+    <button data-correct="true">一块混多主题不够精准</button>
+    <button>句子被劈碎读起来困难</button>
+    <button>重叠部分会重复地计算</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz" id="q3">
+    <div class="q">3. 纯数据的 <code>Chunk</code> 实体,该放在你项目的哪一层?</div>
+    <button data-correct="true">领域 domain</button>
+    <button>应用 application</button>
+    <button>基础 infrastructure</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="source">
+    <span class="tag">Primary source · 先读这个</span>
+    <p style="margin:.5rem 0 0">
+      <a href="https://docs.trychroma.com/">Chroma 文档</a>(我们已选定的向量库)讲清了"块"如何带着
+      <em>document + metadata</em> 一起存取——读它的 <em>Add data</em> 与 <em>Query</em> 两节,
+      就能预见第 4 课要对接的形状。配合
+      <a href="https://ollama.com/blog/embedding-models">Ollama 三步示例</a>看"块 → 向量 → 检索"的真实代码。
+    </p>
+  </div>
+
+  <p class="teacher">
+    <strong>我是你的老师。</strong>"我的资料是代码,该按函数切还是按行切?""中文按字符还是按句子?"——
+    这些都问我。速查表见 <a href="../reference/chunking-cheatsheet.html">分块速查表</a>。
+    下一课 <code>0003 嵌入</code> 会带你把"块"变成向量,并搞懂"相似"到底怎么算。
+  </p>
+
+  <p class="nav">
+    上一课 <a href="0001-rag-pipeline-mental-model.html">0001 RAG 全景</a> ·
+    工作区 <a href="../MISSION.md">MISSION</a> · <a href="../RESOURCES.md">RESOURCES</a> · <a href="../NOTES.md">NOTES</a>
+  </p>
+
+</article>
+
+<script>
+  // ---- live chunker: fixed-size + overlap, with overlap highlighted ----
+  var txt = document.getElementById('txt');
+  var size = document.getElementById('size');
+  var ov = document.getElementById('ov');
+  var sizeOut = document.getElementById('sizeOut');
+  var ovOut = document.getElementById('ovOut');
+  var out = document.getElementById('out');
+  var stat = document.getElementById('stat');
+
+  function esc(s) {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  function chunk(text, chunkSize, overlap) {
+    var step = Math.max(1, chunkSize - overlap);
+    var chunks = [];
+    for (var start = 0; start < text.length; start += step) {
+      var end = Math.min(start + chunkSize, text.length);
+      chunks.push({ start: start, end: end, text: text.slice(start, end) });
+      if (end === text.length) break;
+    }
+    return chunks;
+  }
+
+  function render() {
+    var s = parseInt(size.value, 10);
+    var o = Math.min(parseInt(ov.value, 10), s - 10); // overlap must stay < size
+    sizeOut.textContent = s;
+    ovOut.textContent = o;
+    var text = txt.value;
+    var cs = chunk(text, s, o);
+    stat.textContent = '共 ' + cs.length + ' 块 · 步进 ' + (s - o) + ' 字符 · 重叠率 '
+      + (s ? Math.round((o / s) * 100) : 0) + '%';
+    out.innerHTML = cs.map(function (c, i) {
+      var head = c.text.slice(0, c.text.length - (i < cs.length - 1 ? o : 0));
+      var tail = i < cs.length - 1 ? c.text.slice(c.text.length - o) : '';
+      var body = esc(head) + (tail ? '<span class="ov">' + esc(tail) + '</span>' : '');
+      return '<div class="chunk"><span class="meta">块 ' + (i + 1)
+        + ' · [' + c.start + '–' + c.end + ']</span>' + body + '</div>';
+    }).join('');
+  }
+
+  [txt, size, ov].forEach(function (el) {
+    el.addEventListener('input', render);
+  });
+  render();
+
+  // ---- quizzes: tight automatic feedback ----
+  document.querySelectorAll('.quiz').forEach(function (quiz) {
+    var fb = quiz.querySelector('.feedback');
+    quiz.querySelectorAll('button').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        if (quiz.dataset.done) return;
+        var ok = btn.dataset.correct === 'true';
+        btn.classList.add(ok ? 'correct' : 'wrong');
+        if (!ok) {
+          var right = quiz.querySelector('button[data-correct="true"]');
+          if (right) right.classList.add('correct');
+        }
+        fb.textContent = ok ? '✓ 对了。' : '再想想"块"的大小/重叠各自的代价——正确答案已高亮。';
+        quiz.dataset.done = '1';
+      });
+    });
+  });
+</script>
+</body>
+</html>

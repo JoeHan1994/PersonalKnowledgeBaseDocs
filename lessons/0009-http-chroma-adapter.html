@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>0009 · 接上 HTTP:POST /ingest + Chroma 适配器</title>
+  <link rel="stylesheet" href="../assets/lesson.css" />
+</head>
+<body>
+<article class="lesson">
+
+  <p class="eyebrow">Lesson 0009 · 个人知识库</p>
+  <h1>接上 HTTP:从浏览器把文件送进库</h1>
+  <p class="subtitle">用例已就位,这一课给它装上"门"(路由)和"硬盘"(Chroma 适配器)。</p>
+
+  <div class="win">
+    <strong>这一课的小胜利:</strong>你能讲清一个 <code>POST /ingest</code> 请求怎样<strong>逐层下沉</strong>——
+    路由(<span class="layer">interface</span>)→ 用例(<span class="layer">application</span>)→
+    <strong>Chroma 适配器</strong>(<span class="layer">infrastructure</span>)→ 落盘;
+    并说出"为什么用例只认 <code>VectorStore</code> 端口、从不 import Chroma"。
+  </div>
+
+  <div class="terms">
+    <p class="terms-head">先认词 · 本课会反复出现</p>
+    <dl>
+      <dt>路由 <span class="en">Route Handler</span></dt>
+      <dd>接住一个 HTTP 请求的函数,如 <code>POST /ingest</code>。它只负责<em>收发</em>,把活转交给用例。住在 interface 层。</dd>
+      <dt>请求/响应体 <span class="en">DTO · In/Out</span></dt>
+      <dd>过门时的数据外壳:<code>IngestIn</code>(进)/<code>IngestOut</code>(出)。把 HTTP 的 JSON 和领域对象隔开。</dd>
+      <dt>适配器 <span class="en">Adapter</span></dt>
+      <dd>端口的具体实现。<code>ChromaVectorStore</code> 把抽象的 <code>VectorStore</code> 接到真实的 Chroma 上。</dd>
+      <dt>组合根 <span class="en">Composition root</span></dt>
+      <dd>唯一"把适配器塞进用例"的地方——你项目里的 <code>deps.py · Container</code>。别处都只认端口。</dd>
+      <dt>依赖注入 <span class="en">Depends</span></dt>
+      <dd>FastAPI 的 <code>Depends(get_xxx)</code>:路由不自己造用例,而是让容器递给它。便于替换与测试。</dd>
+      <dt>持久化 <span class="en">persist_directory</span></dt>
+      <dd>Chroma 的 <code>PersistentClient(path=...)</code>:把向量写到磁盘,程序重启数据还在(本地、离线)。</dd>
+    </dl>
+  </div>
+
+  <h2>请求要穿过的四层</h2>
+  <p>
+    上一课的 <code>IngestDocument</code> 用例 <a class="cite" href="0008-ingest-usecase.html#win">[L8]</a>
+    只会"编排",但没人调它、也没真硬盘存。这一课补两头:<strong>上面</strong>开一道门(路由),
+    <strong>下面</strong>接一块盘(Chroma 适配器)。请求像水一样往下流,数据再往上返:
+  </p>
+  <div class="pipe">
+    <div class="step online"><b>interface</b>POST /ingest 收 JSON</div>
+    <div class="step offline"><b>application</b>IngestDocument 编排</div>
+    <div class="step offline"><b>infrastructure</b>ChromaVectorStore.upsert</div>
+    <div class="step offline"><b>Chroma</b>落盘 + 建索引</div>
+  </div>
+
+  <h2>亲手试:发一个 POST /ingest</h2>
+  <p>
+    填好"文件路径"和内容,点 <strong>发送请求</strong>。下面会<strong>逐层亮起</strong>,
+    演示请求如何下沉、响应如何返回(这是教学动画,没真起服务器——真接法见下方代码)。
+  </p>
+
+  <div class="widget">
+    <label>请求体 <code>IngestIn</code>(JSON)</label>
+    <textarea id="body" spellcheck="false">{
+  "path": "notes/embeddings.md",
+  "content": "# 嵌入\n嵌入把文本变成向量,相似的文本向量也相近。"
+}</textarea>
+    <p style="margin:.5rem 0 .8rem">
+      <button class="run" id="send">发送请求</button>
+      <span class="stat" id="stat">就绪</span>
+    </p>
+    <div class="trace" id="trace"></div>
+    <label style="margin-top:.6rem">响应 <code>IngestOut</code></label>
+    <pre class="resp" id="resp">// 点“发送请求”看结果</pre>
+  </div>
+
+  <h2>落到你的项目:三个文件 + 一处接线</h2>
+
+  <p><strong>① 端口</strong>(<span class="layer">domain</span>)——用例只认它,不认 Chroma:</p>
+  <pre class="code">
+# app/domain/ports.py  ——  追加一个出站端口
+@runtime_checkable
+class VectorStore(Protocol):
+    def upsert(
+        self,
+        ids: list[str],
+        vectors: list[list[float]],
+        documents: list[str],
+        metadatas: list[dict],
+    ) -> None: ...
+
+    def query(self, vector: list[float], k: int) -> list[Match]: ...
+  </pre>
+
+  <p><strong>② 适配器</strong>(<span class="layer">infrastructure</span>)——把端口接到真实 Chroma:</p>
+  <pre class="code">
+# app/infrastructure/persistence/chroma_store.py
+import chromadb
+
+class ChromaVectorStore:                      # 实现 VectorStore 端口
+    def __init__(self, path: str, collection: str = "kb"):
+        client = chromadb.PersistentClient(path=path)   # 落盘、离线
+        self._col = client.get_or_create_collection(collection)
+
+    def upsert(self, ids, vectors, documents, metadatas) -> None:
+        self._col.upsert(                      # 有则覆盖、无则新增(第 8 课的幂等)
+            ids=ids, embeddings=vectors,
+            documents=documents, metadatas=metadatas,
+        )
+
+    def query(self, vector, k):
+        r = self._col.query(query_embeddings=[vector], n_results=k)
+        return [Match(id=i, text=d, meta=m)
+                for i, d, m in zip(r["ids"][0], r["documents"][0], r["metadatas"][0])]
+  </pre>
+  <p class="aside">
+    注意:我们<strong>自己</strong>用 <code>LLMProvider.embeddings()</code>(本地 Ollama)算好向量再传 <code>embeddings=</code>,
+    不让 Chroma 替我们嵌入——这样模型由你掌控,完全本地。
+  </p>
+
+  <p><strong>③ 路由</strong>(<span class="layer">interface</span>)——只收发,转交用例:</p>
+  <pre class="code">
+# app/interface/http/routers/ingest.py
+router = APIRouter(prefix="/ingest", tags=["ingest"])
+
+@router.post("", response_model=IngestOut)
+async def ingest(
+    body: IngestIn,
+    service: IngestDocument = Depends(get_ingest_service),
+) -> IngestOut:
+    n = await service.execute(body.path, body.content)
+    return IngestOut(path=body.path, chunks_ingested=n)
+  </pre>
+
+  <p><strong>④ 接线</strong>(组合根)——唯一 import Chroma 的地方:</p>
+  <pre class="code">
+# app/interface/http/deps.py  ——  Container.__init__ 里追加
+store = ChromaVectorStore(settings.chroma_path)         # 适配器
+self.ingest = IngestDocument(loaders, chunker, self.chat, store, settings.embed_model)
+
+def get_ingest_service() -> IngestDocument:
+    return _container.ingest
+  </pre>
+  <p>
+    试一下(服务在 8001):
+    <br><code>curl -X POST http://localhost:8001/ingest -H "Content-Type: application/json" -d '{"path":"notes/x.md","content":"# 标题\n正文"}'</code>
+  </p>
+
+  <h2>检验一下(凭记忆作答)</h2>
+
+  <div class="quiz" id="q1">
+    <div class="q">1. 真正连 Chroma、读写磁盘的 <code>ChromaVectorStore</code>,该放哪层?</div>
+    <button data-correct="true">基础层(写适配器)</button>
+    <button>领域层(纯粹模型)</button>
+    <button>应用层(编排用例)</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz" id="q2">
+    <div class="q">2. <code>POST /ingest</code> 这个路由函数的本职工作是?</div>
+    <button data-correct="true">把请求转交给用例</button>
+    <button>自己实现存取逻辑</button>
+    <button>决定用哪种相似度</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz" id="q3">
+    <div class="q">3. 用例只依赖 <code>VectorStore</code> 端口、从不 import Chroma,好处是?</div>
+    <button data-correct="true">换库不动用例代码</button>
+    <button>让向量算得更精准</button>
+    <button>省掉写适配器的活</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="source">
+    <span class="tag">Primary source · 先读这个</span>
+    <p style="margin:.5rem 0 0">
+      <a href="https://docs.trychroma.com/docs/overview/getting-started">Chroma · Getting Started</a>
+      手把手:<code>get_or_create_collection</code> → <code>collection.upsert(ids, ...)</code> → <code>collection.query</code>,
+      并指出用 <strong>persistent client</strong> 才能落盘——正是你适配器里那几行。
+      切分策略对照 <a href="../reference/chunking-cheatsheet.html">分块速查表</a>,相似度配置见
+      <a href="../reference/similarity-cheatsheet.html">相似度速查表</a>。
+    </p>
+  </div>
+
+  <p class="teacher">
+    <strong>我是你的老师。</strong>"<code>chroma_path</code> 该放哪、要不要 .gitignore?"
+    "Windows 上 Chroma 装不上怎么办?""一个 collection 还是按来源分多个?"——都问我。
+    下一课 <code>0010</code> 会接上<strong>检索那一头</strong>:<code>POST /knowledge/ask</code> 把第 5–6 课的检索 + 问答用例也接进 HTTP,
+    让"存进去"和"问出来"在同一个 Chroma 上闭环。
+  </p>
+
+  <p class="nav">
+    上一课 <a href="0008-ingest-usecase.html">0008 IngestDocument 用例</a> ·
+    工作区 <a href="../MISSION.md">MISSION</a> · <a href="../RESOURCES.md">RESOURCES</a> · <a href="../NOTES.md">NOTES</a>
+  </p>
+
+</article>
+
+<script>
+  // ---- request tracer: animate a POST /ingest descending the layers ----
+  var bodyBox = document.getElementById('body');
+  var traceBox = document.getElementById('trace');
+  var respBox = document.getElementById('resp');
+  var statBox = document.getElementById('stat');
+
+  var LAYERS = [
+    { tag: 'interface',      msg: 'POST /ingest · 解析 IngestIn(校验 JSON)' },
+    { tag: 'application',    msg: 'IngestDocument.execute(path, content)' },
+    { tag: 'application',    msg: '加载 → 分块 → 批量 embeddings(本地 Ollama)' },
+    { tag: 'infrastructure', msg: 'ChromaVectorStore.upsert(ids, vectors, …)' },
+    { tag: 'chroma',         msg: 'PersistentClient 落盘 + 建索引(HNSW)' }
+  ];
+
+  function chunkCount(content) {
+    var clean = content.replace(/^\s{0,3}#{1,6}\s+/gm, '').replace(/\s+/g, ' ').trim();
+    return Math.max(1, Math.ceil(clean.length / 24));
+  }
+
+  function send() {
+    var path = 'notes/unknown.md', content = '';
+    try {
+      var parsed = JSON.parse(bodyBox.value);
+      path = parsed.path || path;
+      content = parsed.content || '';
+    } catch (e) {
+      statBox.textContent = '✗ JSON 解析失败';
+      respBox.textContent = '{ "error": "请求体不是合法 JSON" }';
+      traceBox.innerHTML = '';
+      return;
+    }
+
+    statBox.textContent = '请求下沉中…';
+    respBox.textContent = '// 等待响应…';
+    traceBox.innerHTML = '';
+
+    LAYERS.forEach(function (L, i) {
+      setTimeout(function () {
+        var row = document.createElement('div');
+        row.className = 'tr ' + L.tag;
+        row.innerHTML = '<span class="lyr">' + L.tag + '</span><span class="dsc">'
+          + '↓ ' + L.msg + '</span>';
+        traceBox.appendChild(row);
+
+        if (i === LAYERS.length - 1) {
+          var n = chunkCount(content);
+          var ids = [];
+          for (var c = 0; c < n; c++) ids.push(path + '#' + c);
+          statBox.textContent = '✓ 200 OK · ' + n + ' 块入库';
+          respBox.textContent =
+            '{\n  "path": "' + path + '",\n  "chunks_ingested": ' + n
+            + ',\n  "ids": [' + ids.map(function (x) { return '"' + x + '"'; }).join(', ') + ']\n}';
+        }
+      }, i * 360);
+    });
+  }
+
+  document.getElementById('send').addEventListener('click', send);
+
+  // ---- quizzes ----
+  document.querySelectorAll('.quiz').forEach(function (quiz) {
+    var fb = quiz.querySelector('.feedback');
+    quiz.querySelectorAll('button').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        if (quiz.dataset.done) return;
+        var ok = btn.dataset.correct === 'true';
+        btn.classList.add(ok ? 'correct' : 'wrong');
+        if (!ok) {
+          var right = quiz.querySelector('button[data-correct="true"]');
+          if (right) right.classList.add('correct');
+        }
+        fb.textContent = ok
+          ? '\u2713 \u5bf9\u4e86\u3002'
+          : '\u518d\u60f3\u60f3\u201c\u5206\u5c42\u804c\u8d23 / \u7aef\u53e3\u5728\u5185\u201d\u2014\u2014\u6b63\u786e\u7b54\u6848\u5df2\u9ad8\u4eae\u3002';
+        quiz.dataset.done = '1';
+      });
+    });
+  });
+</script>
+
+<style>
+  /* lesson-local styles (promote to assets if reused) */
+  pre.code, pre.resp {
+    font-family: var(--mono); font-size: .74rem; line-height: 1.7;
+    background: #f1efe8; padding: .8rem 1rem; border-radius: 6px;
+    overflow-x: auto; white-space: pre; margin: .6rem 0 1rem;
+  }
+  pre.resp { font-size: .78rem; }
+  .aside { font-size: .86rem; opacity: .82; border-left: 3px solid var(--accent); padding-left: .8rem; }
+  .widget textarea { font-family: var(--mono); font-size: .8rem; min-height: 6rem; }
+  button.run {
+    font-family: var(--serif); font-size: .92rem; cursor: pointer;
+    padding: .42rem .9rem; border-radius: 6px; border: 1px solid var(--accent);
+    background: var(--accent); color: #fff;
+  }
+  .stat { font-family: var(--mono); font-size: .82rem; margin-left: .6rem; opacity: .8; }
+  .trace { display: flex; flex-direction: column; gap: .3rem; min-height: 1rem; }
+  .trace .tr {
+    display: grid; grid-template-columns: 8rem 1fr; gap: .6rem; align-items: baseline;
+    padding: .3rem .5rem; border-radius: 5px; animation: drop .28s ease;
+  }
+  .trace .lyr { font-family: var(--mono); font-size: .74rem; opacity: .8; }
+  .trace .dsc { font-size: .84rem; }
+  .trace .interface      { background: rgba(122,31,31,.08); }
+  .trace .application    { background: rgba(47,93,58,.08); }
+  .trace .infrastructure { background: rgba(47,93,58,.14); }
+  .trace .chroma         { background: rgba(47,93,58,.20); }
+  @keyframes drop { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+</style>
+</body>
+</html>

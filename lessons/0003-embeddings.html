@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>0003 · 嵌入:把"块"变成可比较的向量</title>
+  <link rel="stylesheet" href="../assets/lesson.css" />
+</head>
+<body>
+<article class="lesson">
+
+  <p class="eyebrow">Lesson 0003 · 个人知识库</p>
+  <h1>嵌入:把"块"变成可比较的向量</h1>
+  <p class="subtitle">"相似"不是玄学,它就是两个向量夹角的余弦。</p>
+
+  <div class="win">
+    <strong>这一课的小胜利:</strong>你能亲手转动两个向量、实时读出它们的<strong>余弦相似度</strong>,
+    并说清"为什么把向量放大一倍、相似度却纹丝不动"——然后认出你项目里
+    <span class="layer">domain</span> 已有的 <code>LLMProvider.embeddings()</code> 端口,
+    就是把"块"变成向量的入口。
+  </div>
+
+  <div class="terms">
+    <p class="terms-head">先认词 · 本课会反复出现</p>
+    <dl>
+      <dt>嵌入 <span class="en">Embedding</span></dt>
+      <dd>把一段文字交给"嵌入模型",换回一串数字的<strong>动作</strong>。这串数字就是它的语义坐标。</dd>
+      <dt>向量 <span class="en">Vector</span></dt>
+      <dd>就是那一串数字,例如 384 或 768 个小数。可以想成高维空间里的一个<strong>带方向的箭头</strong>。</dd>
+      <dt>维度 <span class="en">Dimension</span></dt>
+      <dd>向量里有几个数字,就是几"维"。768 维 = 768 个数字一起描述这段话的含义。</dd>
+      <dt>余弦相似度 <span class="en">Cosine similarity</span></dt>
+      <dd>两个向量<strong>夹角</strong>的余弦值,范围 −1~1。只看方向不看长度,所以对文本长短不敏感。本课主角。</dd>
+      <dt>点积 <span class="en">Dot product</span></dt>
+      <dd>两向量对应数字相乘再相加。方向 + 长度都算;若先归一化,它就等于余弦。</dd>
+      <dt>归一化 <span class="en">Normalize</span></dt>
+      <dd>把向量长度统一拉成 1,只保留方向。归一化后,余弦/点积/欧氏排序基本一致。</dd>
+      <dt>端口 / 适配器 <span class="en">Port / Adapter</span></dt>
+      <dd>端口=领域层声明"我要个能算向量的东西"(契约);适配器=基础层用 Ollama/远程 API 真正去算。</dd>
+    </dl>
+  </div>
+
+  <h2>嵌入到底做了什么?</h2>
+  <p>
+    回忆离线管道:<a class="cite" href="0001-rag-pipeline-mental-model.html#win">[L1]</a>
+    加载 → 分块 → <strong>嵌入</strong> → 入库。上一课你把长文切成了"块"
+    <a class="cite" href="0002-chunking.html">[L2]</a>;这一课,要把每个块交给<strong>嵌入模型</strong>,
+    换回一串数字——一个<strong>向量</strong>(例如 384 或 768 个浮点数)。
+  </p>
+  <p>
+    神奇之处:意思相近的文本,向量在空间里<strong>方向相近</strong>。
+    于是"语义相似"这件模糊的事,被翻译成了一道<strong>能精确计算的几何题</strong>。
+    检索时不再靠关键词匹配,而是问:"哪些块的向量,方向最贴近问题的向量?"
+  </p>
+
+  <h2>怎么量"方向有多近"?余弦相似度</h2>
+  <p>
+    答案是<strong>余弦相似度</strong>:两个向量夹角的余弦值。<a class="cite" href="#s1">[1]</a>
+    范围 −1 到 1——<code>1</code> 完全同向、<code>0</code> 正交无关、<code>−1</code> 完全反向。
+    关键性质:它<strong>只看方向、不看长度</strong>,所以对文本长短不敏感。亲手转一转 👇
+  </p>
+
+  <div class="widget" id="vec">
+    <canvas id="cv" width="280" height="280"
+      style="display:block;margin:0 auto;background:#fff;border:1px solid var(--rule);border-radius:8px"></canvas>
+
+    <div class="controls">
+      <div class="control">
+        <label for="angA">向量 A 方向<output id="angAOut">20°</output></label>
+        <input type="range" id="angA" min="0" max="360" step="1" value="20" />
+      </div>
+      <div class="control">
+        <label for="angB">向量 B 方向<output id="angBOut">70°</output></label>
+        <input type="range" id="angB" min="0" max="360" step="1" value="70" />
+      </div>
+    </div>
+    <div class="controls">
+      <div class="control">
+        <label for="lenA">A 长度(模拟"文本长短")<output id="lenAOut">0.9</output></label>
+        <input type="range" id="lenA" min="0.2" max="1" step="0.05" value="0.9" />
+      </div>
+      <div class="control">
+        <label for="lenB">B 长度<output id="lenBOut">0.5</output></label>
+        <input type="range" id="lenB" min="0.2" max="1" step="0.05" value="0.5" />
+      </div>
+    </div>
+
+    <div class="stat" id="stat"></div>
+  </div>
+
+  <p>
+    拖动两条<strong>长度</strong>滑块——余弦值<strong>不动</strong>;只有转动<strong>方向</strong>它才变。
+    这就是检索不怕"长块 vs 短块"的原因:比的是方向,不是大小。
+  </p>
+
+  <h2>那道几何题长这样</h2>
+  <p>余弦相似度的公式,就是"点积 ÷ 两个模长":</p>
+  <p style="text-align:center;font-family:var(--mono);font-size:.95rem;background:#f1efe8;padding:.8rem 1rem;border-radius:6px">
+    cos(A, B) = (A · B) / (‖A‖ × ‖B‖)
+  </p>
+  <p>
+    其中点积 <code>A · B = Σ aᵢbᵢ</code>,模长 <code>‖A‖ = √(Σ aᵢ²)</code>。
+    维度从 2 升到 768,公式一字不改——你在上面玩的就是真东西,只是看得见而已。
+  </p>
+
+  <h2>落到你的项目</h2>
+  <p>
+    好消息:把文本变成向量的<strong>端口已经在你项目里了</strong>。<span class="layer">domain</span>
+    定义"要什么",<span class="layer">infrastructure</span> 决定"谁来做"(本地 Ollama / 远程 API):
+  </p>
+  <p style="font-family:var(--mono);font-size:.78rem;background:#f1efe8;padding:.8rem 1rem;border-radius:6px;line-height:1.7">
+    # app/domain/ports.py(领域层 · 只声明契约)<br>
+    class LLMProvider(Protocol):<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;async def embeddings(self, model: str, inputs: list[str]) -&gt; list[list[float]]: ...<br>
+    <br>
+    # app/domain/services.py(领域层 · 纯数学,无 I/O)<br>
+    def cosine(a: list[float], b: list[float]) -&gt; float:<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;dot = sum(x * y for x, y in zip(a, b))<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;na = math.sqrt(sum(x * x for x in a))<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;nb = math.sqrt(sum(y * y for y in b))<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;return dot / (na * nb)
+  </p>
+  <p>
+    记住这条分界:<strong>"调模型算向量"是 I/O,归 <span class="layer">infrastructure</span>(Ollama 适配器);
+    "算余弦"是纯数学,归 <span class="layer">domain</span>。</strong>
+    下一课你会把这些向量连同块一起塞进 Chroma,让"找最近的方向"这件事变得飞快。
+  </p>
+
+  <h2>检验一下(凭记忆作答)</h2>
+
+  <div class="quiz" id="q1">
+    <div class="q">1. 余弦相似度主要衡量两个向量的什么?</div>
+    <button data-correct="true">它们方向有多接近</button>
+    <button>它们长度差多少倍</button>
+    <button>它们数值的总和值</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz" id="q2">
+    <div class="q">2. 把一个向量整体放大两倍,它和另一向量的余弦相似度会?</div>
+    <button data-correct="true">完全保持不变</button>
+    <button>直接翻成两倍</button>
+    <button>减小到一半值</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz" id="q3">
+    <div class="q">3. "调用模型把文本变成向量"这步,属于你项目的哪一层?</div>
+    <button data-correct="true">基础 infrastructure</button>
+    <button>领域 domain</button>
+    <button>应用 application</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="source">
+    <span class="tag">Primary source · 先读这个</span>
+    <p style="margin:.5rem 0 0" id="s1">
+      <a href="https://sbert.net/">Sentence-Transformers(SBERT)文档</a>是"句子→向量、用余弦比相似"的权威出处——
+      读它的 <em>Quickstart</em> 与 <em>Semantic Search</em> 两节,会看到 <code>model.encode()</code> +
+      <code>cos_sim()</code> 正是本课公式的真实代码。再配
+      <a href="https://ollama.com/blog/embedding-models">Ollama 嵌入模型</a>,看本地模型怎样吐出同样的向量。
+    </p>
+  </div>
+
+  <p class="teacher">
+    <strong>我是你的老师。</strong>"该选哪个嵌入模型?维度越高越好吗?""中英文混排会影响向量吗?"
+    "余弦和欧氏距离该用哪个?"——这些都问我,别自己猜。
+    想看余弦之外的所有相似度(欧氏/曼哈顿/杰卡德/汉明/皮尔逊/BM25),
+    见 <a href="../reference/similarity-cheatsheet.html">相似度速查表</a>。
+    下一课 <code>0004 向量库</code> 会带你把"块 + 向量"存进 Chroma,并搞懂它如何在百万向量里秒级找到最近的几个。
+  </p>
+
+  <p class="nav">
+    上一课 <a href="0002-chunking.html">0002 分块</a> ·
+    工作区 <a href="../MISSION.md">MISSION</a> · <a href="../RESOURCES.md">RESOURCES</a> · <a href="../NOTES.md">NOTES</a>
+  </p>
+
+</article>
+
+<script>
+  // ---- 2D vector playground: cosine = cos(angle between A and B) ----
+  var cv = document.getElementById('cv');
+  var ctx = cv.getContext('2d');
+  var angA = document.getElementById('angA');
+  var angB = document.getElementById('angB');
+  var lenA = document.getElementById('lenA');
+  var lenB = document.getElementById('lenB');
+  var angAOut = document.getElementById('angAOut');
+  var angBOut = document.getElementById('angBOut');
+  var lenAOut = document.getElementById('lenAOut');
+  var lenBOut = document.getElementById('lenBOut');
+  var stat = document.getElementById('stat');
+
+  var W = cv.width, H = cv.height, cx = W / 2, cy = H / 2, R = 110;
+
+  function arrow(angDeg, len, color, label) {
+    var rad = angDeg * Math.PI / 180;
+    var x = cx + Math.cos(rad) * R * len;
+    var y = cy - Math.sin(rad) * R * len; // flip y for math coords
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(x, y);
+    ctx.stroke();
+    // arrowhead
+    var a = Math.atan2(y - cy, x - cx);
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x - 10 * Math.cos(a - 0.4), y - 10 * Math.sin(a - 0.4));
+    ctx.lineTo(x - 10 * Math.cos(a + 0.4), y - 10 * Math.sin(a + 0.4));
+    ctx.closePath();
+    ctx.fill();
+    ctx.font = '13px sans-serif';
+    ctx.fillText(label, x + 6 * Math.cos(a), y + 6 * Math.sin(a) - 6);
+  }
+
+  function render() {
+    var aA = parseFloat(angA.value), aB = parseFloat(angB.value);
+    var lA = parseFloat(lenA.value), lB = parseFloat(lenB.value);
+    angAOut.textContent = aA + '\u00b0';
+    angBOut.textContent = aB + '\u00b0';
+    lenAOut.textContent = lA.toFixed(2);
+    lenBOut.textContent = lB.toFixed(2);
+
+    ctx.clearRect(0, 0, W, H);
+    // axes
+    ctx.strokeStyle = '#e4e0d6';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, cy); ctx.lineTo(W, cy); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, H); ctx.stroke();
+    // unit circle for reference
+    ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.stroke();
+
+    arrow(aA, lA, '#7a1f1f', 'A');
+    arrow(aB, lB, '#2f5d3a', 'B');
+
+    var diff = Math.abs(aA - aB) % 360;
+    if (diff > 180) diff = 360 - diff;
+    var cos = Math.cos(diff * Math.PI / 180);
+    var sense = cos > 0.95 ? '几乎同向(高度相似)'
+      : cos > 0.3 ? '方向相近(有点像)'
+      : cos > -0.3 ? '接近正交(基本无关)'
+      : '方向相反(语义相左)';
+    stat.innerHTML = '夹角 ' + Math.round(diff) + '\u00b0 · 余弦相似度 = <strong>'
+      + cos.toFixed(3) + '</strong> · ' + sense
+      + '<br>长度 A=' + lA.toFixed(2) + ' B=' + lB.toFixed(2)
+      + ' —— 改长度,余弦不变;改方向,余弦才变。';
+  }
+
+  [angA, angB, lenA, lenB].forEach(function (el) {
+    el.addEventListener('input', render);
+  });
+  render();
+
+  // ---- quizzes: tight automatic feedback ----
+  document.querySelectorAll('.quiz').forEach(function (quiz) {
+    var fb = quiz.querySelector('.feedback');
+    quiz.querySelectorAll('button').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        if (quiz.dataset.done) return;
+        var ok = btn.dataset.correct === 'true';
+        btn.classList.add(ok ? 'correct' : 'wrong');
+        if (!ok) {
+          var right = quiz.querySelector('button[data-correct="true"]');
+          if (right) right.classList.add('correct');
+        }
+        fb.textContent = ok ? '\u2713 \u5bf9\u4e86\u3002'
+          : '\u518d\u60f3\u60f3\u201c\u53ea\u770b\u65b9\u5411\u3001\u4e0d\u770b\u957f\u5ea6\u201d\u2014\u2014\u6b63\u786e\u7b54\u6848\u5df2\u9ad8\u4eae\u3002';
+        quiz.dataset.done = '1';
+      });
+    });
+  });
+</script>
+</body>
+</html>

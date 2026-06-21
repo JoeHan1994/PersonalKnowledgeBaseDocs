@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>0005 · 检索:把问题变成一段"带出处的提示词"</title>
+  <link rel="stylesheet" href="../assets/lesson.css" />
+</head>
+<body>
+<article class="lesson">
+
+  <p class="eyebrow">Lesson 0005 · 个人知识库</p>
+  <h1>检索:把问题变成一段"带出处的提示词"</h1>
+  <p class="subtitle">这是在线的那一半——嵌问题、取 top-k、拼上下文。</p>
+
+  <div class="win">
+    <strong>这一课的小胜利:</strong>你能输入一个问题,亲眼看着系统给候选块<strong>打分排序</strong>、
+    取出最相关的 <code>k</code> 个,并实时拼成一段<strong>带 [1][2] 出处的提示词</strong>;
+    然后说清这套编排为什么属于你项目的 <span class="layer">application</span> 层。
+  </div>
+
+  <div class="terms">
+    <p class="terms-head">先认词 · 本课会反复出现</p>
+    <dl>
+      <dt>检索 <span class="en">Retrieval</span></dt>
+      <dd>在线阶段:把问题也嵌成向量,去向量库里取出最相关的几块原文。RAG 里的"查资料"。</dd>
+      <dt>相似度分数 <span class="en">Score</span></dt>
+      <dd>每个候选块和问题有多像的数值。越高越靠前,排序就靠它。</dd>
+      <dt>上下文 / 提示词 <span class="en">Context / Prompt</span></dt>
+      <dd>把取回的原文 + 问题拼成的一段话,交给模型照着答。本课的产物。</dd>
+      <dt>出处标注 <span class="en">Citation</span></dt>
+      <dd>给每块资料编号 [1][2],让答案能指回原文,可追溯、可信。</dd>
+      <dt>重排 <span class="en">Re-rank</span></dt>
+      <dd>先粗筛一批,再用更精的模型把"最相关的"重新排到最前。可选的进阶环节。</dd>
+      <dt>用例 / 应用层 <span class="en">Use case / application</span></dt>
+      <dd>把多步操作"编排"成一个业务动作的地方。只调端口,不碰具体实现。</dd>
+    </dl>
+  </div>
+
+  <h2>检索做了哪几步?</h2>
+  <p>
+    回忆在线管道:<a class="cite" href="0001-rag-pipeline-mental-model.html#win">[L1]</a>
+    问题嵌入 → 检索 top-k → 拼接 → 生成。这一课聚焦中间三步(生成留到下一课):
+  </p>
+  <p>
+    · <strong>嵌问题</strong>:用和建库时<em>同一个</em>嵌入模型,把问题也变成向量
+      <a class="cite" href="0003-embeddings.html">[L3]</a>。<br>
+    · <strong>取 top-k</strong>:向量库返回最相似的 k 个块,每个带<strong>分数</strong>和<strong>元数据</strong>
+      <a class="cite" href="0004-vector-store.html">[L4]</a>。<br>
+    · <strong>拼上下文</strong>:把这 k 段原文编号,和问题拼成一段<strong>带出处的提示词</strong>。
+  </p>
+
+  <h2>亲手试:输入问题 → 看它排序 + 拼装</h2>
+  <p>
+    下面是一个迷你知识库(几条已入库的块)。输入问题,系统给每块打分、取
+    <code>top-k</code>,并在下方<strong>实时拼出提示词</strong>。
+    (这里用"词语重合"当相似度的<em>简化替身</em>;真实里换成余弦,思路一样 👇)
+  </p>
+
+  <div class="widget" id="retr">
+    <label for="q">你的问题</label>
+    <textarea id="q" style="min-height:3rem">我该怎么挑选并配置向量库?</textarea>
+
+    <div class="controls">
+      <div class="control">
+        <label for="k">top-k(取回几块)<output id="kOut">2</output></label>
+        <input type="range" id="k" min="1" max="4" step="1" value="2" />
+      </div>
+    </div>
+
+    <label>候选块 · 按相似度排序</label>
+    <div class="chunks" id="ranked"></div>
+
+    <label>拼出的提示词(将交给模型)</label>
+    <div class="chunk" id="prompt" style="background:#eef2ec;white-space:pre-wrap"></div>
+  </div>
+
+  <h2>拼出来的提示词长什么样</h2>
+  <p>
+    核心模板就一句:<strong>"只根据下面的资料回答,并标注出处编号;答不出就说不知道。"</strong>
+    后面跟编号的资料,再跟问题。"答不出就说不知道"这句很关键——它把模型<strong>摁在资料里</strong>,
+    少编造。
+  </p>
+
+  <h2>落到你的项目</h2>
+  <p>
+    检索是一段<strong>编排</strong>:嵌问题、查库、拼提示。它只<strong>调用端口</strong>
+    (<code>LLMProvider.embeddings</code>、<code>VectorStore.query</code>),不关心谁来实现——
+    所以它是一个 <span class="layer">application</span> 用例:
+  </p>
+  <p style="font-family:var(--mono);font-size:.76rem;background:#f1efe8;padding:.8rem 1rem;border-radius:6px;line-height:1.7">
+    # app/application/retrieve_context.py(应用层 · 只编排,不碰 I/O 细节)<br>
+    class RetrieveContext:<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;def __init__(self, embedder: LLMProvider, store: VectorStore): ...<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;async def run(self, question: str, k: int) -&gt; list[Chunk]:<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;vec = (await self.embedder.embeddings(MODEL, [question]))[0]<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;return await self.store.query(vec, k)&nbsp;&nbsp;# top-k 块
+  </p>
+  <p>
+    记住:<strong>"嵌问题 + 查库 + 拼上下文"是 <span class="layer">application</span> 的编排;
+    具体怎么嵌、怎么查,是 <span class="layer">infrastructure</span> 的事。</strong>
+    下一课会接上最后一步——把这段提示交给已有的 <code>LLMProvider</code>,生成<strong>带出处的回答</strong>,
+    打通你的第一个垂直切片。
+  </p>
+
+  <h2>进阶一眼:重排(re-rank)</h2>
+  <p>
+    当 top-k 还不够准,可加<strong>两段式</strong>:先用向量<strong>粗筛</strong>一批(如 top-20),
+    再用更精细的模型(cross-encoder)给这 20 个<strong>重新打分</strong>,只留最好的 3 个。<a class="cite" href="#s1">[1]</a>
+    先知道有这招即可,主线打通后再加。
+  </p>
+
+  <h2>检验一下(凭记忆作答)</h2>
+
+  <div class="quiz" id="q1">
+    <div class="q">1. 在线检索阶段,第一步对"问题"做什么?</div>
+    <button data-correct="true">也把它嵌成向量</button>
+    <button>直接当关键词查</button>
+    <button>先切成很多小块</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz" id="q2">
+    <div class="q">2. "嵌问题 + 查库 + 拼带出处的提示词"这套编排,该放哪一层?</div>
+    <button data-correct="true">应用 application</button>
+    <button>领域 domain</button>
+    <button>基础 infrastructure</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz" id="q3">
+    <div class="q">3. 再加一个"重排(re-rank)"环节,主要为了什么?</div>
+    <button data-correct="true">把最相关的排更前</button>
+    <button>让向量库占用更小</button>
+    <button>把问题切得更碎些</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="source">
+    <span class="tag">Primary source · 先读这个</span>
+    <p style="margin:.5rem 0 0" id="s1">
+      <a href="https://sbert.net/examples/sentence_transformer/applications/semantic-search/README.html">SBERT · Semantic Search</a>
+      把"嵌问题 → 算余弦 → 取 top-k"写成十几行真实代码(<code>encode_query</code> + <code>topk</code>);
+      想更准就看它的 <a href="https://sbert.net/examples/sentence_transformer/applications/retrieve_rerank/README.html">Retrieve &amp; Re-rank</a>
+      两段式策略。机制对照 <a href="https://docs.trychroma.com/docs/overview/getting-started">Chroma query</a>。
+    </p>
+  </div>
+
+  <p class="teacher">
+    <strong>我是你的老师。</strong>"k 取几合适?""提示词里资料放问题前还是后?"
+    "中文检索要不要先分词?"——这些都问我。度量怎么选见
+    <a href="../reference/similarity-cheatsheet.html">相似度速查表</a>。
+    下一课 <code>0006 RAG 问答</code> 会把检索 + 生成串成一个端到端用例,你的知识库第一次"会答话"。
+  </p>
+
+  <p class="nav">
+    上一课 <a href="0004-vector-store.html">0004 向量库</a> ·
+    工作区 <a href="../MISSION.md">MISSION</a> · <a href="../RESOURCES.md">RESOURCES</a> · <a href="../NOTES.md">NOTES</a>
+  </p>
+
+</article>
+
+<script>
+  // ---- retrieval + assembly playground (lexical stand-in for embeddings) ----
+  var qEl = document.getElementById('q');
+  var kEl = document.getElementById('k');
+  var kOut = document.getElementById('kOut');
+  var ranked = document.getElementById('ranked');
+  var promptBox = document.getElementById('prompt');
+
+  // tiny seeded "knowledge base": each chunk has text + source
+  var corpus = [
+    { text: 'Chroma 是开源向量库,支持本地持久化,适合个人知识库离线使用。', src: 'chroma.md · p1' },
+    { text: '建集合时用 hnsw:space 选择距离度量,默认 l2,也可以设成 cosine 或 ip。', src: 'chroma.md · p2' },
+    { text: '嵌入模型把文本转成向量,意思相近的文本向量方向也相近。', src: 'embedding.md · p1' },
+    { text: '分块常用固定大小加重叠,重叠通常取块大小的百分之十到二十。', src: 'chunking.md · p1' },
+    { text: '检索时把问题也嵌入成向量,取相似度最高的若干块作为出处。', src: 'retrieval.md · p1' },
+    { text: 'FastAPI 路由属于接口层,只做参数校验和调用应用层用例。', src: 'arch.md · p1' }
+  ];
+
+  function esc(s) {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  // tokenize: keep CJK chars individually + ascii words; drop punctuation
+  function tokens(s) {
+    var t = [];
+    var m = s.toLowerCase().match(/[a-z0-9]+|[\u4e00-\u9fff]/g);
+    if (m) t = m;
+    return t;
+  }
+
+  // bag-of-words cosine as a transparent stand-in for semantic similarity
+  function score(qTokens, text) {
+    var a = {}, b = {};
+    qTokens.forEach(function (w) { a[w] = (a[w] || 0) + 1; });
+    tokens(text).forEach(function (w) { b[w] = (b[w] || 0) + 1; });
+    var dot = 0, na = 0, nb = 0;
+    Object.keys(a).forEach(function (w) { na += a[w] * a[w]; if (b[w]) dot += a[w] * b[w]; });
+    Object.keys(b).forEach(function (w) { nb += b[w] * b[w]; });
+    return (na && nb) ? dot / (Math.sqrt(na) * Math.sqrt(nb)) : 0;
+  }
+
+  function render() {
+    var k = parseInt(kEl.value, 10);
+    kOut.textContent = k;
+    var qt = tokens(qEl.value);
+    var scored = corpus
+      .map(function (c, i) { return { c: c, i: i, s: score(qt, c.text) }; })
+      .sort(function (x, y) { return y.s - x.s; });
+
+    var top = scored.slice(0, k).filter(function (o) { return o.s > 0; });
+
+    ranked.innerHTML = scored.map(function (o, rank) {
+      var hit = rank < k && o.s > 0;
+      var pct = Math.round(o.s * 100);
+      return '<div class="chunk" style="' + (hit ? '' : 'opacity:.5;') + '">'
+        + '<span class="meta">' + (hit ? '✓ 取回 ' : '— ') + 'score ' + pct + '% · ' + esc(o.c.src) + '</span>'
+        + '<div style="height:5px;background:#e4e0d6;border-radius:3px;margin:.2rem 0 .4rem">'
+        + '<div style="height:5px;width:' + pct + '%;background:' + (hit ? '#7a1f1f' : '#c9c3b4') + ';border-radius:3px"></div></div>'
+        + esc(o.c.text) + '</div>';
+    }).join('');
+
+    if (top.length === 0) {
+      promptBox.textContent = '(没有匹配到资料 —— 这种情况应让模型回答"不知道")';
+      return;
+    }
+    var ctx = top.map(function (o, i) {
+      return '[' + (i + 1) + '] ' + o.c.text + '  (出处:' + o.c.src + ')';
+    }).join('\n');
+    promptBox.textContent =
+      '只根据下面的资料回答,并在句末标注出处编号 [n];资料里没有就回答"不知道"。\n\n'
+      + '资料:\n' + ctx + '\n\n问题:' + qEl.value;
+  }
+
+  qEl.addEventListener('input', render);
+  kEl.addEventListener('input', render);
+  render();
+
+  // ---- quizzes ----
+  document.querySelectorAll('.quiz').forEach(function (quiz) {
+    var fb = quiz.querySelector('.feedback');
+    quiz.querySelectorAll('button').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        if (quiz.dataset.done) return;
+        var ok = btn.dataset.correct === 'true';
+        btn.classList.add(ok ? 'correct' : 'wrong');
+        if (!ok) {
+          var right = quiz.querySelector('button[data-correct="true"]');
+          if (right) right.classList.add('correct');
+        }
+        fb.textContent = ok ? '\u2713 \u5bf9\u4e86\u3002'
+          : '\u518d\u60f3\u60f3\u201c\u5d4c\u95ee\u9898 / \u53d6 top-k / \u62fc\u51fa\u5904\u201d\u2014\u2014\u6b63\u786e\u7b54\u6848\u5df2\u9ad8\u4eae\u3002';
+        quiz.dataset.done = '1';
+      });
+    });
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>0010 · 闭环:POST /knowledge/ask 把库问出来</title>
+  <link rel="stylesheet" href="../assets/lesson.css" />
+</head>
+<body>
+<article class="lesson">
+
+  <p class="eyebrow">Lesson 0010 · 个人知识库</p>
+  <h1>闭环:把刚存进去的资料<em>问出来</em></h1>
+  <p class="subtitle">上一课装了"存"的门,这一课装"问"的门——同一个 Chroma,两头打通。</p>
+
+  <div class="win">
+    <strong>这一课的小胜利:</strong>你能讲清一个 <code>POST /knowledge/ask</code> 请求的<strong>读路径</strong>——
+    问题<strong>嵌成查询向量</strong> → Chroma 取 <strong>top-k</strong> → 拼成带出处的提示词 → 模型生成答案;
+    并说出"存和问<strong>共用同一个向量库实例</strong>"才是闭环的关键。
+  </div>
+
+  <div class="terms">
+    <p class="terms-head">先认词 · 本课会反复出现</p>
+    <dl>
+      <dt>读路径 <span class="en">Query path</span></dt>
+      <dd>和上一课"写路径"相对:请求进来不是存,而是<em>查 + 答</em>。同样穿过四层,方向一致、动作相反。</dd>
+      <dt>查询向量 <span class="en">Query embedding</span></dt>
+      <dd>把用户问题用<em>同一个</em>嵌入模型变成的向量。只有同模型、同维度,才能和库里的块比距离。</dd>
+      <dt>闭环 <span class="en">Closed loop</span></dt>
+      <dd>"存进去"和"问出来"落在同一个 Chroma 上。靠组合根里<strong>共享同一个适配器实例</strong>实现。</dd>
+      <dt>认怂阈值 <span class="en">Threshold</span></dt>
+      <dd>最高分仍低于阈值 ⇒ 库里没有 ⇒ 如实说"不知道"。防幻觉的第一道闸(第 6 课)。</dd>
+      <dt>出处 <span class="en">Citation</span></dt>
+      <dd>每条答案带上来源块的 id/元数据,让人能回溯核对。接地(grounding)的凭据。</dd>
+      <dt>检索用例 <span class="en">RetrieveContext</span></dt>
+      <dd>第 5 课那只手:嵌问题 → 查库 → 返回带分数的块。问答用例 <code>AnswerQuestion</code> 调它。</dd>
+    </dl>
+  </div>
+
+  <h2>同一个 Chroma,两道门</h2>
+  <p>
+    上一课 <a class="cite" href="0009-http-chroma-adapter.html#win">[L9]</a> 你把文件存进了
+    <code>ChromaVectorStore</code>。这一课不再新建库——<strong>复用同一个实例</strong>,
+    只是反着走:请求带来一个问题,沿四层下沉去<em>查</em>,再把答案逐层返回。
+  </p>
+  <div class="pipe">
+    <div class="step online"><b>interface</b>POST /knowledge/ask 收问题</div>
+    <div class="step offline"><b>application</b>RetrieveContext:嵌问题 → 查 top-k</div>
+    <div class="step offline"><b>application</b>AnswerQuestion:拼提示词 → 生成</div>
+    <div class="step online"><b>response</b>答案 + 出处返回</div>
+  </div>
+
+  <h2>亲手试:对刚入库的资料提问</h2>
+  <p>
+    下面这个"库"已预装三块(就当是上一课 ingest 进去的)。问个问题点 <strong>提问</strong>:
+    会<strong>逐层亮起</strong>读路径,按词面相似度取最像的块,拼出带出处的答案。
+    问一句库里没有的(如"明天天气?")——会触发<strong>认怂阈值</strong>,如实说不知道。
+  </p>
+
+  <div class="widget">
+    <div class="store-peek" id="peek"></div>
+    <label style="margin-top:.6rem">问题</label>
+    <input id="q" type="text" value="嵌入是什么?" />
+    <p style="margin:.5rem 0 .8rem">
+      <button class="run" id="ask">提问</button>
+      <button class="run ghost" data-q="知识库怎么分块?">试:怎么分块</button>
+      <button class="run ghost" data-q="明天天气怎么样?">试:库外问题</button>
+      <span class="stat" id="stat">就绪</span>
+    </p>
+    <div class="trace" id="trace"></div>
+    <div class="answer" id="answer"></div>
+  </div>
+
+  <h2>落到你的项目:两块 DTO + 一个路由 + 共享实例</h2>
+
+  <p><strong>① 请求/响应体</strong>(<span class="layer">interface</span>):</p>
+  <pre class="code">
+# app/interface/http/schemas.py  ——  追加
+class AskIn(BaseModel):
+    question: str
+    k: int = 3
+
+class SourceOut(BaseModel):
+    id: str
+    score: float
+    meta: dict
+
+class AskOut(BaseModel):
+    answer: str
+    sources: list[SourceOut]      # 出处:可回溯
+  </pre>
+
+  <p><strong>② 路由</strong>(<span class="layer">interface</span>)——只收发,转交问答用例:</p>
+  <pre class="code">
+# app/interface/http/routers/knowledge.py
+router = APIRouter(prefix="/knowledge", tags=["knowledge"])
+
+@router.post("/ask", response_model=AskOut)
+async def ask(
+    body: AskIn,
+    service: AnswerQuestion = Depends(get_answer_service),   # 第 6 课的用例
+) -> AskOut:
+    result = await service.run(body.question, body.k)
+    return AskOut(
+        answer=result.text,
+        sources=[SourceOut(id=s.id, score=s.score, meta=s.meta) for s in result.sources],
+    )
+  </pre>
+
+  <p><strong>③ 接线</strong>(组合根)——闭环的关键:<u>同一个 store 实例</u>喂给两个用例:</p>
+  <pre class="code">
+# app/interface/http/deps.py  ——  Container.__init__
+store = ChromaVectorStore(settings.chroma_path)        # ← 只造一次
+
+# 写路径(上一课)
+self.ingest = IngestDocument(loaders, chunker, self.chat, store, settings.embed_model)
+# 读路径(这一课)
+retrieve = RetrieveContext(self.chat, store, settings.embed_model)   # 第 5 课
+self.answer = AnswerQuestion(retrieve, self.chat)                    # 第 6 课
+
+def get_answer_service() -> AnswerQuestion:
+    return _container.answer
+  </pre>
+  <p class="aside">
+    <code>ingest</code> 和 <code>answer</code> 拿到的是<strong>同一个 <code>store</code></strong>——
+    所以你 <code>POST /ingest</code> 存的东西,<code>POST /knowledge/ask</code> 立刻能查到。这就是闭环。
+  </p>
+  <p>
+    跑通它(服务在 8001):先存再问。
+    <br><code>curl -X POST http://localhost:8001/knowledge/ask -H "Content-Type: application/json" -d '{"question":"嵌入是什么?","k":3}'</code>
+  </p>
+
+  <h2>检验一下(凭记忆作答)</h2>
+
+  <div class="quiz" id="q1">
+    <div class="q">1. 让"存进去"和"问出来"形成闭环,组合根里最关键的一步是?</div>
+    <button data-correct="true">共用同一个向量库实例</button>
+    <button>查询时重新算一遍嵌入</button>
+    <button>把答案也存回向量库里</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz" id="q2">
+    <div class="q">2. 检索阶段,要先把用户问题怎么处理,才能在 Chroma 里比对?</div>
+    <button data-correct="true">把问题嵌成查询向量</button>
+    <button>把问题翻成英文再查</button>
+    <button>把问题直接当答案用</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz" id="q3">
+    <div class="q">3. 取回的块分数都很低(库里其实没有),最稳妥的做法是?</div>
+    <button data-correct="true">如实说不知道并停手</button>
+    <button>硬凑一段答案给用户</button>
+    <button>随便返回最像的一条</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="source">
+    <span class="tag">Primary source · 先读这个</span>
+    <p style="margin:.5rem 0 0">
+      <a href="https://docs.langchain.com/oss/python/langchain/knowledge-base">LangChain · Build a semantic search engine</a>
+      末尾"在检索之上的最小 RAG"演示了读路径:<code>similarity_search(question, k)</code> 取块、
+      再拼进提示词交给模型——正是你 <code>AnswerQuestion.run()</code> 的形状。
+      对照第 5 课检索 <a class="cite" href="0005-retrieval.html#win">[L5]</a>、第 6 课问答
+      <a class="cite" href="0006-rag-qa.html#win">[L6]</a>。
+    </p>
+  </div>
+
+  <p class="teacher">
+    <strong>我是你的老师。</strong>"k 取几合适?""阈值怎么定才不误伤?"
+    "答案要不要流式返回(SSE)?""一个库混了多来源,要不要按 <code>metadata</code> 过滤?"——都问我。
+    下一课 <code>0011</code> 会把这条闭环接到<strong>前端</strong>:在 <code>privateknowledgebase.Web</code> 里
+    做一个上传 + 提问的小界面,真正用上你这套本地知识库。
+  </p>
+
+  <p class="nav">
+    上一课 <a href="0009-http-chroma-adapter.html">0009 接 HTTP + Chroma</a> ·
+    工作区 <a href="../MISSION.md">MISSION</a> · <a href="../RESOURCES.md">RESOURCES</a> · <a href="../NOTES.md">NOTES</a>
+  </p>
+
+</article>
+
+<script>
+  // ---- closed-loop QA demo: query -> top-k -> assemble -> answer (honest lexical stand-in) ----
+  var STORE = [
+    { id: 'notes/embeddings.md#0', text: '嵌入把文本变成向量,意思相近的文本向量也彼此靠近。', meta: { source: 'embeddings.md' } },
+    { id: 'notes/chunking.md#0',   text: '分块是把长文档切成小段,每段单独嵌入,便于检索时精准命中。', meta: { source: 'chunking.md' } },
+    { id: 'notes/vectorstore.md#0',text: '向量库用近似最近邻索引(如 HNSW)在海量向量里快速找最像的几条。', meta: { source: 'vectorstore.md' } }
+  ];
+  var THRESHOLD = 0.06;
+
+  var peek = document.getElementById('peek');
+  var qBox = document.getElementById('q');
+  var traceBox = document.getElementById('trace');
+  var ansBox = document.getElementById('answer');
+  var statBox = document.getElementById('stat');
+
+  function renderPeek() {
+    peek.innerHTML = '<div class="peek-head">库里现有 ' + STORE.length + ' 块(假设上一课已 ingest)</div>';
+    STORE.forEach(function (c) {
+      var row = document.createElement('div');
+      row.className = 'peek-row';
+      row.innerHTML = '<code>' + c.id + '</code><span>' + c.text + '</span>';
+      peek.appendChild(row);
+    });
+  }
+
+  // crude CJK bag-of-words cosine — honest stand-in for real embeddings
+  function tokens(s) { return (s.replace(/[，。?？!！、\s]/g, '').match(/[\u4e00-\u9fa5a-zA-Z]/g) || []); }
+  function vec(tok) { var v = {}; tok.forEach(function (t) { v[t] = (v[t] || 0) + 1; }); return v; }
+  function cosine(a, b) {
+    var dot = 0, na = 0, nb = 0;
+    Object.keys(a).forEach(function (k) { na += a[k] * a[k]; if (b[k]) dot += a[k] * b[k]; });
+    Object.keys(b).forEach(function (k) { nb += b[k] * b[k]; });
+    return (na && nb) ? dot / Math.sqrt(na * nb) : 0;
+  }
+
+  var LAYERS = [
+    { tag: 'interface',   msg: 'POST /knowledge/ask · 解析 AskIn' },
+    { tag: 'application', msg: 'RetrieveContext:把问题嵌成查询向量' },
+    { tag: 'infrastructure', msg: 'ChromaVectorStore.query(vector, k)' },
+    { tag: 'application', msg: 'AnswerQuestion:拼带出处的提示词 → 生成' }
+  ];
+
+  function ask(question) {
+    var q = (question || '').trim();
+    if (!q) return;
+    qBox.value = q;
+    statBox.textContent = '检索中…';
+    traceBox.innerHTML = '';
+    ansBox.innerHTML = '';
+
+    var qv = vec(tokens(q));
+    var ranked = STORE.map(function (c) {
+      return { c: c, score: cosine(qv, vec(tokens(c.text))) };
+    }).sort(function (a, b) { return b.score - a.score; });
+
+    LAYERS.forEach(function (L, i) {
+      setTimeout(function () {
+        var row = document.createElement('div');
+        row.className = 'tr ' + L.tag;
+        row.innerHTML = '<span class="lyr">' + L.tag + '</span><span class="dsc">↓ ' + L.msg + '</span>';
+        traceBox.appendChild(row);
+        if (i === LAYERS.length - 1) finish(q, ranked);
+      }, i * 340);
+    });
+  }
+
+  function finish(q, ranked) {
+    var top = ranked.slice(0, 3).filter(function (r) { return r.score > 0; });
+    if (!top.length || top[0].score < THRESHOLD) {
+      statBox.textContent = '✓ 200 OK · 认怂';
+      ansBox.innerHTML = '<div class="ans-text">我在库里没找到相关内容,无法回答“'
+        + q + '”。<span class="muted">(最高分 '
+        + (ranked[0] ? ranked[0].score.toFixed(2) : '0.00') + ' < 阈值 ' + THRESHOLD + ')</span></div>'
+        + '<div class="ans-src">sources: []</div>';
+      return;
+    }
+    statBox.textContent = '✓ 200 OK · ' + top.length + ' 条出处';
+    var summary = top.map(function (r) { return r.c.text; }).join(' ');
+    ansBox.innerHTML =
+      '<div class="ans-text"><b>答:</b>' + summary
+      + ' <span class="muted">(演示:真实项目由本地模型据这些块生成)</span></div>'
+      + '<div class="ans-src">sources: ' + top.map(function (r) {
+          return '<code>' + r.c.id + '</code> <i>' + r.score.toFixed(2) + '</i>';
+        }).join(' · ') + '</div>';
+  }
+
+  document.getElementById('ask').addEventListener('click', function () { ask(qBox.value); });
+  qBox.addEventListener('keydown', function (e) { if (e.key === 'Enter') ask(qBox.value); });
+  document.querySelectorAll('button[data-q]').forEach(function (b) {
+    b.addEventListener('click', function () { ask(b.getAttribute('data-q')); });
+  });
+
+  renderPeek();
+
+  // ---- quizzes ----
+  document.querySelectorAll('.quiz').forEach(function (quiz) {
+    var fb = quiz.querySelector('.feedback');
+    quiz.querySelectorAll('button').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        if (quiz.dataset.done) return;
+        var ok = btn.dataset.correct === 'true';
+        btn.classList.add(ok ? 'correct' : 'wrong');
+        if (!ok) {
+          var right = quiz.querySelector('button[data-correct="true"]');
+          if (right) right.classList.add('correct');
+        }
+        fb.textContent = ok
+          ? '\u2713 \u5bf9\u4e86\u3002'
+          : '\u518d\u60f3\u60f3\u201c\u540c\u4e00\u4e2a\u5e93 / \u5d4c\u95ee\u9898 / \u8ba4\u601c\u201d\u2014\u2014\u6b63\u786e\u7b54\u6848\u5df2\u9ad8\u4eae\u3002';
+        quiz.dataset.done = '1';
+      });
+    });
+  });
+</script>
+
+<style>
+  /* lesson-local styles (promote to assets if reused) */
+  pre.code {
+    font-family: var(--mono); font-size: .74rem; line-height: 1.7;
+    background: #f1efe8; padding: .8rem 1rem; border-radius: 6px;
+    overflow-x: auto; white-space: pre; margin: .6rem 0 1rem;
+  }
+  .aside { font-size: .86rem; opacity: .82; border-left: 3px solid var(--accent); padding-left: .8rem; }
+  .widget input[type="text"] {
+    width: 100%; box-sizing: border-box; font-family: var(--serif); font-size: .95rem;
+    padding: .5rem .65rem; border: 1px solid rgba(0,0,0,.18); border-radius: 6px;
+    background: var(--paper); color: var(--ink);
+  }
+  button.run {
+    font-family: var(--serif); font-size: .9rem; cursor: pointer;
+    padding: .4rem .85rem; border-radius: 6px; border: 1px solid var(--accent);
+    background: var(--accent); color: #fff;
+  }
+  button.run.ghost { background: transparent; color: var(--accent); }
+  .stat { font-family: var(--mono); font-size: .82rem; margin-left: .5rem; opacity: .8; }
+  .store-peek { background: rgba(0,0,0,.03); border-radius: 6px; padding: .5rem .7rem; }
+  .peek-head { font-family: var(--mono); font-size: .76rem; opacity: .7; margin-bottom: .3rem; }
+  .peek-row { display: grid; grid-template-columns: 12rem 1fr; gap: .6rem; padding: .2rem 0; font-size: .82rem; }
+  .peek-row code { font-family: var(--mono); font-size: .72rem; color: var(--accent); }
+  .trace { display: flex; flex-direction: column; gap: .3rem; min-height: 1rem; margin-top: .4rem; }
+  .trace .tr { display: grid; grid-template-columns: 8rem 1fr; gap: .6rem; align-items: baseline;
+    padding: .3rem .5rem; border-radius: 5px; animation: drop .28s ease; }
+  .trace .lyr { font-family: var(--mono); font-size: .74rem; opacity: .8; }
+  .trace .dsc { font-size: .84rem; }
+  .trace .interface { background: rgba(122,31,31,.08); }
+  .trace .application { background: rgba(47,93,58,.10); }
+  .trace .infrastructure { background: rgba(47,93,58,.16); }
+  .answer { margin-top: .6rem; }
+  .ans-text { font-size: .9rem; line-height: 1.6; }
+  .ans-src { font-family: var(--mono); font-size: .74rem; margin-top: .4rem; opacity: .85; }
+  .ans-src code { color: var(--accent); }
+  .ans-src i { opacity: .6; }
+  .muted { opacity: .55; font-size: .8rem; }
+  @keyframes drop { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+</style>
+</body>
+</html>

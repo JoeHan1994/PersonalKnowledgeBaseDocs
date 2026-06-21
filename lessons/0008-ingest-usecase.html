@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>0008 · IngestDocument:把真实文件喂进库</title>
+  <link rel="stylesheet" href="../assets/lesson.css" />
+</head>
+<body>
+<article class="lesson">
+
+  <p class="eyebrow">Lesson 0008 · 个人知识库</p>
+  <h1>IngestDocument:第一次把<em>你的</em>文件喂进库</h1>
+  <p class="subtitle">加载器、分块器、嵌入、向量库——这一课把它们串成一个用例。</p>
+
+  <div class="win">
+    <strong>这一课的小胜利:</strong>你能说清一个 <strong><code>IngestDocument</code> 用例</strong>怎样
+    <strong>编排</strong>"加载 → 分块 → 嵌入 → 入库"四步;并亲手验证:同一个文件<strong>反复入库不产生副本</strong>
+    (靠<strong>稳定 id</strong> + <strong>upsert</strong>),改一处只更新那一处。
+  </div>
+
+  <div class="terms">
+    <p class="terms-head">先认词 · 本课会反复出现</p>
+    <dl>
+      <dt>用例 <span class="en">Use case</span></dt>
+      <dd>应用层里"一件完整的事"的入口,如<code>IngestDocument</code>(把一份资料收进库)。它只<em>编排</em>步骤,不自己干脏活。</dd>
+      <dt>编排 <span class="en">Orchestration</span></dt>
+      <dd>按顺序调用各个部件(加载器→分块器→嵌入→向量库),把它们的输入输出接起来。用例的本职工作。</dd>
+      <dt>稳定 id <span class="en">Deterministic id</span></dt>
+      <dd>由内容来源算出的固定编号,如 <code>note.md#0</code>。同一块每次都得同一个 id,这样才能"认得出旧的"。</dd>
+      <dt>幂等 <span class="en">Idempotent</span></dt>
+      <dd>同样的输入跑一次和跑十次,库里的结果一样。靠稳定 id 实现——重复入库不堆副本。</dd>
+      <dt>upsert <span class="en">update-or-insert</span></dt>
+      <dd>有则覆盖、无则新增。向量库按 id 入库时用它,保证改一处只换一处。</dd>
+      <dt>批量 <span class="en">Batch</span></dt>
+      <dd>把一批块一次性算嵌入、一次性写库,比逐个来快得多——嵌入和写库都喜欢成批。</dd>
+    </dl>
+  </div>
+
+  <h2>用例 = 把前几课串起来的那只手</h2>
+  <p>
+    你已经分别学过四个部件:<a class="cite" href="0007-loaders.html#win">[L7]</a> 加载器、
+    <a class="cite" href="0002-chunking.html#win">[L2]</a> 分块、
+    <a class="cite" href="0003-embeddings.html#win">[L3]</a> 嵌入、
+    <a class="cite" href="0004-vector-store.html#win">[L4]</a> 向量库。
+    现在缺一只<strong>手</strong>把它们按顺序接起来——这只手就是 <code>IngestDocument</code> 用例,住在
+    <span class="layer">application</span> 层。它<strong>只编排,不实现</strong>:加载交给加载器,算向量交给
+    <code>LLMProvider</code>,写库交给 <code>VectorStore</code>。
+  </p>
+  <div class="pipe">
+    <div class="step offline"><b>load()</b>文件→Document</div>
+    <div class="step offline"><b>chunk()</b>Document→Chunks</div>
+    <div class="step offline"><b>embeddings()</b>每块→向量</div>
+    <div class="step offline"><b>upsert()</b>(id,向量,元数据)→库</div>
+  </div>
+
+  <h2>亲手试:运行 IngestDocument(可重复)</h2>
+  <p>
+    下面是一个迷你"入库台"。编辑几个"文件",点 <strong>运行 IngestDocument</strong>:它按扩展名挑加载器、
+    切块、给每块算<strong>稳定 id</strong>、再 upsert 进右边的"向量库"。
+    <strong>连点两次</strong>——条数不会翻倍(幂等);只改其中一个文件再点——只有它的块被换掉。
+  </p>
+
+  <div class="widget">
+    <div class="files" id="files"></div>
+    <p style="margin:.4rem 0 .8rem">
+      <button class="run" id="run">运行 IngestDocument</button>
+      <button class="run ghost" id="reset">清空库</button>
+      <span class="stat" id="stat">库里 0 块</span>
+    </p>
+    <div class="store" id="store"></div>
+  </div>
+
+  <h2>落到你的项目:用例长什么样</h2>
+  <p>
+    端口都已就位:加载器 <code>Loader</code>(第 7 课)、向量库 <code>VectorStore</code>(第 4 课)、
+    嵌入 <code>LLMProvider.embeddings(model, inputs)</code>(你代码里已有)。用例只是把它们编排起来:
+  </p>
+  <pre class="code">
+# app/application/ingest_service.py  ——  application 层,只编排
+class IngestDocument:
+    def __init__(self, loaders, chunker, embedder, store, model):
+        self._loaders = loaders      # 扩展名 -> Loader(第 7 课注册表)
+        self._chunker = chunker      # Document -> list[Chunk](第 2 课)
+        self._embedder = embedder    # LLMProvider(你已有)
+        self._store = store          # VectorStore(第 4 课)
+        self._model = model          # 如 "nomic-embed-text"(本地 Ollama)
+
+    async def execute(self, path: str) -> int:
+        loader = self._loaders.for_path(path)     # 按扩展名挑加载器
+        doc = loader.load(path)                    # 异构 -> 统一 Document
+        chunks = self._chunker.split(doc)          # 一份 -> 多块
+        ids   = [f"{doc.id}#{i}" for i, _ in enumerate(chunks)]   # 稳定 id
+        texts = [c.text for c in chunks]
+        vectors = await self._embedder.embeddings(self._model, texts)  # 批量
+        self._store.upsert(ids, vectors, chunks)   # 有则覆盖、无则新增
+        return len(chunks)
+  </pre>
+  <p>
+    三个细节决定它好不好用:<strong>(1) 稳定 id</strong> 让重复入库幂等;
+    <strong>(2) 批量</strong> 把一份文件的所有块一次算、一次写;
+    <strong>(3) 用例不 import 任何适配器</strong>——只认端口,依赖始终向内。
+  </p>
+
+  <h2>检验一下(凭记忆作答)</h2>
+
+  <div class="quiz" id="q1">
+    <div class="q">1. <code>IngestDocument</code> 这类"编排步骤"的用例,应该住在哪一层?</div>
+    <button data-correct="true">应用层(只做编排)</button>
+    <button>领域层(纯粹规则)</button>
+    <button>基础层(读写细节)</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz" id="q2">
+    <div class="q">2. 为每块算 <code>source#index</code> 这种稳定 id,主要是为了?</div>
+    <button data-correct="true">重复入库不会产生副本</button>
+    <button>让向量算得又快又省事</button>
+    <button>把检索结果排得更靠前</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz" id="q3">
+    <div class="q">3. 你只改了一个文件后再次 ingest,符合幂等的理想结果是?</div>
+    <button data-correct="true">只更新它而别的保持不变</button>
+    <button>整库重建一遍再覆盖旧的</button>
+    <button>顺手把别的文件也更新掉</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="source">
+    <span class="tag">Primary source · 先读这个</span>
+    <p style="margin:.5rem 0 0">
+      <a href="https://docs.langchain.com/oss/python/langchain/knowledge-base">LangChain · Build a semantic search engine</a>
+      把"索引阶段"演示得最干净:读文件 → <code>Document</code> → 切块 →
+      <code>ids = vector_store.add_documents(documents=all_splits)</code> 返回每块的 id——
+      正是你 <code>IngestDocument.execute()</code> 的真身。对照你已有的
+      <a href="../reference/chunking-cheatsheet.html">分块速查表</a> 选每类资料的切法。
+    </p>
+  </div>
+
+  <p class="teacher">
+    <strong>我是你的老师。</strong>"稳定 id 该用路径还是内容哈希?""文件删了怎么从库里清掉?"
+    "一份大文件块太多,批量要不要分批发?"——都问我。
+    下一课 <code>0009</code> 会把这个用例接上 HTTP:写 <code>POST /ingest</code> 路由 +
+    <code>VectorStore</code> 的 Chroma 适配器,让你<strong>真的</strong>从浏览器把一份文件送进库。
+  </p>
+
+  <p class="nav">
+    上一课 <a href="0007-loaders.html">0007 加载器</a> ·
+    工作区 <a href="../MISSION.md">MISSION</a> · <a href="../RESOURCES.md">RESOURCES</a> · <a href="../NOTES.md">NOTES</a>
+  </p>
+
+</article>
+
+<script>
+  // ---- mini IngestDocument: load -> chunk -> stable id -> upsert ----
+  var seed = [
+    { name: 'note.md',  text: '---\ntitle: 读书笔记\ntags: 学习\n---\n# 嵌入\n嵌入把文本变成向量。相似的文本向量也相近。' },
+    { name: 'todo.txt', text: '周一 整理资料\n周二 写检索用例\n周三 接 Chroma 适配器' }
+  ];
+
+  var CHUNK = 24;                 // 演示用:每 24 字一块(真实项目按字句切)
+  var store = {};                 // id -> { source, text }
+  var filesBox = document.getElementById('files');
+  var storeBox = document.getElementById('store');
+  var statBox  = document.getElementById('stat');
+
+  function render() {
+    filesBox.innerHTML = '';
+    seed.forEach(function (f, idx) {
+      var card = document.createElement('div');
+      card.className = 'file-card';
+      var label = document.createElement('div');
+      label.className = 'file-name';
+      label.textContent = f.name;
+      var ta = document.createElement('textarea');
+      ta.value = f.text;
+      ta.spellcheck = false;
+      ta.addEventListener('input', function () { seed[idx].text = ta.value; });
+      card.appendChild(label);
+      card.appendChild(ta);
+      filesBox.appendChild(card);
+    });
+  }
+
+  function stripMd(t) {
+    var m = t.match(/^---\s*\n[\s\S]*?\n---\s*\n?/);
+    if (m) t = t.slice(m[0].length);
+    return t.replace(/^\s{0,3}#{1,6}\s+/gm, '').replace(/\n{2,}/g, '\n').trim();
+  }
+
+  function chunk(text) {
+    var out = [], clean = text.replace(/\s+/g, ' ').trim();
+    for (var i = 0; i < clean.length; i += CHUNK) out.push(clean.slice(i, i + CHUNK));
+    return out.length ? out : [''];
+  }
+
+  function ingest() {
+    seed.forEach(function (f) {
+      var body = f.name.endsWith('.md') ? stripMd(f.text) : f.text;
+      var parts = chunk(body);
+      // 先清掉这个来源的旧块(模拟 upsert 覆盖整份文件)
+      Object.keys(store).forEach(function (id) {
+        if (store[id].source === f.name) delete store[id];
+      });
+      parts.forEach(function (p, i) {
+        var id = f.name + '#' + i;            // 稳定 id:同块永远同 id
+        store[id] = { source: f.name, text: p };   // upsert:有则覆盖
+      });
+    });
+    paint();
+  }
+
+  function paint() {
+    var ids = Object.keys(store);
+    statBox.textContent = '库里 ' + ids.length + ' 块';
+    storeBox.innerHTML = '';
+    if (!ids.length) { storeBox.innerHTML = '<p class="empty">空库 — 点上面的运行</p>'; return; }
+    ids.forEach(function (id) {
+      var row = document.createElement('div');
+      row.className = 'row';
+      row.innerHTML = '<code class="rid">' + id + '</code>'
+        + '<span class="rsrc">' + store[id].source + '</span>'
+        + '<span class="rtxt">' + (store[id].text || '∅') + '</span>';
+      storeBox.appendChild(row);
+    });
+  }
+
+  document.getElementById('run').addEventListener('click', ingest);
+  document.getElementById('reset').addEventListener('click', function () { store = {}; paint(); });
+
+  render();
+  paint();
+</script>
+
+<style>
+  /* lesson-local styles for the ingest widget (kept here; promote to assets if reused) */
+  pre.code {
+    font-family: var(--mono); font-size: .74rem; line-height: 1.7;
+    background: #f1efe8; padding: .8rem 1rem; border-radius: 6px;
+    overflow-x: auto; white-space: pre; margin: .6rem 0 1rem;
+  }
+  .widget .files { display: flex; gap: .8rem; flex-wrap: wrap; }
+  .file-card { flex: 1 1 260px; }
+  .file-name { font-family: var(--mono); font-size: .8rem; color: var(--accent); margin-bottom: .25rem; }
+  .file-card textarea {
+    width: 100%; min-height: 6.5rem; resize: vertical;
+    font-family: var(--mono); font-size: .82rem; line-height: 1.5;
+    padding: .55rem .65rem; border: 1px solid rgba(0,0,0,.18); border-radius: 6px;
+    background: var(--paper); color: var(--ink); box-sizing: border-box;
+  }
+  button.run {
+    font-family: var(--serif); font-size: .92rem; cursor: pointer;
+    padding: .42rem .9rem; border-radius: 6px; border: 1px solid var(--accent);
+    background: var(--accent); color: #fff;
+  }
+  button.run.ghost { background: transparent; color: var(--accent); }
+  .stat { font-family: var(--mono); font-size: .82rem; color: var(--ink); margin-left: .6rem; opacity: .8; }
+  .store { border-top: 1px dashed rgba(0,0,0,.22); margin-top: .4rem; }
+  .store .empty { color: var(--ink); opacity: .55; font-style: italic; }
+  .store .row {
+    display: grid; grid-template-columns: 7.5rem 5rem 1fr; gap: .6rem; align-items: baseline;
+    padding: .32rem 0; border-bottom: 1px solid rgba(0,0,0,.07);
+  }
+  .store .rid  { font-family: var(--mono); font-size: .8rem; color: var(--accent); }
+  .store .rsrc { font-family: var(--mono); font-size: .76rem; opacity: .65; }
+  .store .rtxt { font-size: .86rem; }
+</style>
+
+<script>
+  // ---- quizzes ----
+  document.querySelectorAll('.quiz').forEach(function (quiz) {
+    var fb = quiz.querySelector('.feedback');
+    quiz.querySelectorAll('button').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        if (quiz.dataset.done) return;
+        var ok = btn.dataset.correct === 'true';
+        btn.classList.add(ok ? 'correct' : 'wrong');
+        if (!ok) {
+          var right = quiz.querySelector('button[data-correct="true"]');
+          if (right) right.classList.add('correct');
+        }
+        fb.textContent = ok
+          ? '\u2713 \u5bf9\u4e86\u3002'
+          : '\u518d\u60f3\u60f3\u201c\u53ea\u7f16\u6392 / \u7a33\u5b9a id / \u5e42\u7b49\u201d\u2014\u2014\u6b63\u786e\u7b54\u6848\u5df2\u9ad8\u4eae\u3002';
+        quiz.dataset.done = '1';
+      });
+    });
+  });
+</script>
+</body>
+</html>

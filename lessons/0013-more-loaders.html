@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>0013 · 更多 Loader:把 PDF 和网页也收进来</title>
+  <link rel="stylesheet" href="../assets/lesson.css" />
+</head>
+<body>
+<article class="lesson">
+
+  <p class="eyebrow">Lesson 0013 · 个人知识库 · 横向加料</p>
+  <h1>更多 Loader:让 PDF 和网页也能进库</h1>
+  <p class="subtitle">回到最初的痛点——"数据源很乱"。这一课给加载器注册表添两类来源,用例一行不改。</p>
+
+  <div class="win">
+    <strong>这一课的小胜利:</strong>你能在第 7 课的 <code>Loader</code> 模式上,
+    再插两个加载器——<strong>PdfLoader</strong>(pypdf 抽文本)和 <strong>WebLoader</strong>(抓网页正文),
+    挂进按"扩展名/协议"分发的<strong>注册表</strong>。
+    <code>IngestDocument</code> 用例<strong>一个字都不用改</strong>,新格式自动能存能问。
+  </div>
+
+  <div class="terms">
+    <p class="terms-head">先认词 · 本课会反复出现</p>
+    <dl>
+      <dt>注册表 <span class="en">registry</span></dt>
+      <dd>一张"扩展名/协议 → 加载器"的表:<code>.pdf→PdfLoader</code>、<code>http→WebLoader</code>。加来源=往表里加一行。</dd>
+      <dt>分发 <span class="en">dispatch</span></dt>
+      <dd>来一个 path,先看它长什么样(后缀/前缀),再<em>派</em>给对应加载器。用例自己不关心怎么解析。</dd>
+      <dt>归一化 <span class="en">normalize</span></dt>
+      <dd>不管 PDF、网页还是 md,加载完都吐出<em>同一种</em> <code>Document</code>(text + metadata)。下游只认它。</dd>
+      <dt>语义层缺失 <span class="en">no semantic layer</span></dt>
+      <dd>PDF 只为"打印好看"而生,正文是<em>绝对定位</em>的字符,没有"这是标题/段落"的标记——所以抽文本天生难。</dd>
+      <dt>正文提取 <span class="en">main-content</span></dt>
+      <dd>网页里导航/广告/页脚都是噪声。WebLoader 要<em>去模板</em>,只留正文,别把"登录""Cookie 同意"也存进去。</dd>
+      <dt>开闭原则 <span class="en">open/closed</span></dt>
+      <dd>对扩展开放、对修改关闭:加新来源只<em>新增</em>加载器,不去改已经跑通的用例和路由。</dd>
+    </dl>
+  </div>
+
+  <h2>一张表,管住所有来源</h2>
+  <p>
+    第 7 课你已经有 <code>Loader</code> 接口(吃 path,吐 <code>Document</code>)。
+    现在的关键是一张<strong>注册表</strong> + 一个 <code>pick_loader(path)</code>:
+    它根据后缀或 <code>http</code> 前缀选加载器。来源再乱,入口只有这一个。
+  </p>
+  <div class="pipe">
+    <div class="step offline"><b>.md / .txt</b> → TextLoader</div>
+    <div class="step offline"><b>.pdf</b> → PdfLoader</div>
+    <div class="step offline"><b>http(s)://</b> → WebLoader</div>
+    <div class="step online"><b>Document</b> 统一出口</div>
+  </div>
+
+  <h2>亲手试:丢不同来源,看它派给谁</h2>
+  <p>
+    选一个来源点"加载",看注册表把它<strong>分发</strong>给哪个加载器,以及归一后的 <code>Document</code>。
+    (PDF/网页解析是<strong>诚实替身</strong>:真解析见下方代码,这里只演示分发与归一的形状。)
+  </p>
+
+  <div class="widget">
+    <p style="margin:0 0 .6rem">
+      <button class="src" data-path="notes/嵌入.md">notes/嵌入.md</button>
+      <button class="src" data-path="papers/rag.pdf">papers/rag.pdf</button>
+      <button class="src" data-path="https://example.com/post">https://example.com/post</button>
+      <button class="src" data-path="data/raw.bin">data/raw.bin</button>
+    </p>
+    <div class="dispatch" id="dispatch"><span class="muted">选一个来源…</span></div>
+    <pre class="doc" id="doc"></pre>
+  </div>
+
+  <h2>落到你的项目:加两个加载器 + 注册</h2>
+
+  <p><strong>① 加载器接口(回顾第 7 课的端口)</strong></p>
+  <pre class="code">
+# app/domain/ports.py  (已有,回顾)
+class Loader(Protocol):
+    def can_load(self, path: str) -&gt; bool: ...
+    def load(self, path: str) -&gt; Document: ...   # Document = text + metadata
+  </pre>
+
+  <p><strong>② PdfLoader</strong> — pypdf 逐页抽文本,拼成一个 Document:</p>
+  <pre class="code">
+# app/infrastructure/loaders/pdf_loader.py
+from pypdf import PdfReader          # pip install pypdf
+
+class PdfLoader:
+    def can_load(self, path: str) -&gt; bool:
+        return path.lower().endswith(".pdf")
+
+    def load(self, path: str) -&gt; Document:
+        reader = PdfReader(path)
+        text = "\n".join(page.extract_text() or "" for page in reader.pages)
+        return Document(text=text, metadata={"path": path, "pages": len(reader.pages)})
+  </pre>
+  <p class="aside">
+    PDF 没有语义层,正文是绝对定位的字符——抽出来常带怪空格、页眉页脚。
+    先能用,后续再加清洗(去页码/合并断行)。扫描件得另上 OCR,pypdf 抽不出图里的字。
+  </p>
+
+  <p><strong>③ WebLoader</strong> — 抓网页、去模板只留正文:</p>
+  <pre class="code">
+# app/infrastructure/loaders/web_loader.py
+import httpx
+from bs4 import BeautifulSoup     # pip install beautifulsoup4
+
+class WebLoader:
+    def can_load(self, path: str) -&gt; bool:
+        return path.startswith("http://") or path.startswith("https://")
+
+    def load(self, path: str) -&gt; Document:
+        html = httpx.get(path, timeout=20, follow_redirects=True).text
+        soup = BeautifulSoup(html, "html.parser")
+        for tag in soup(["script", "style", "nav", "footer", "header"]):
+            tag.decompose()                       # 去模板:扔掉噪声
+        text = soup.get_text(separator="\n", strip=True)
+        return Document(text=text, metadata={"path": path, "source": "web"})
+  </pre>
+
+  <p><strong>④ 注册表 + 分发</strong> — 加来源只动这一处:</p>
+  <pre class="code">
+# app/infrastructure/loaders/registry.py
+LOADERS: list[Loader] = [TextLoader(), PdfLoader(), WebLoader()]
+
+def pick_loader(path: str) -&gt; Loader:
+    for loader in LOADERS:
+        if loader.can_load(path):
+            return loader
+    raise UnsupportedSourceError(path)   # 没人认领 → 明确报错,别假装能读
+
+# IngestDocument.execute(path) 内部就调 pick_loader(path).load(path)
+# —— 用例无需改动,这就是开闭原则
+  </pre>
+
+  <h2>检验一下(凭记忆作答)</h2>
+
+  <div class="quiz" id="q1">
+    <div class="q">1. 为什么从 PDF 抽文本,比从 <code>.md</code> 难得多?</div>
+    <button data-correct="true">正文是绝对定位的</button>
+    <button>文件一定被加密了</button>
+    <button>里面只能存图片的</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz" id="q2">
+    <div class="q">2. 要新支持一种来源(PDF/网页),最干净的做法是?</div>
+    <button data-correct="true">只加新加载器即可</button>
+    <button>改用例里一堆判断</button>
+    <button>把后端整个重写过</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz" id="q3">
+    <div class="q">3. 不同来源加载之后,都要先归一成什么,下游才好处理?</div>
+    <button data-correct="true">统一的文档对象</button>
+    <button>同一种向量维度</button>
+    <button>一样长的分块串</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="source">
+    <span class="tag">Primary source · 先读这个</span>
+    <p style="margin:.5rem 0 0">
+      <a href="https://pypdf.readthedocs.io/en/stable/user/extract-text.html">pypdf · Extract Text from a PDF</a>
+      给出最小用法 <code>PdfReader(path).pages[0].extract_text()</code>,
+      并坦白讲清"PDF 没有语义层、正文绝对定位、空格难还原"——这正是 PDF 抽取天生难的根因。
+      网页正文提取的"去模板"思路,可对照 <a href="https://docs.langchain.com/oss/python/integrations/document_loaders">LangChain Document Loaders</a>(第 7 课)。
+    </p>
+  </div>
+
+  <p class="teacher">
+    <strong>我是你的老师。</strong>"扫描版 PDF 抽不出字怎么办(OCR)?""网页正文提取想更准,该用
+    readability / trafilatura 吗?""一个 PDF 几百页,要不要按页存 metadata 方便溯源?"——都问我。
+    下一课 <code>0014</code> 你来挑:<strong>重排 re-rank</strong>(检索后再精排,提准)
+    或 <strong>自动化验收测试</strong>(把第 12 课那四步冒烟写成 pytest,以后改完一键回归)。
+  </p>
+
+  <p class="nav">
+    上一课 <a href="0012-integration-acceptance.html">0012 真实联调</a> ·
+    工作区 <a href="../MISSION.md">MISSION</a> · <a href="../RESOURCES.md">RESOURCES</a> · <a href="../NOTES.md">NOTES</a>
+  </p>
+
+</article>
+
+<script>
+  // ---- loader dispatch demo (honest stand-in for pdf/web parsing) ----
+  var dispatchBox = document.getElementById('dispatch');
+  var docBox = document.getElementById('doc');
+
+  function pick(path) {
+    var p = path.toLowerCase();
+    if (p.startsWith('http://') || p.startsWith('https://')) return 'WebLoader';
+    if (p.endsWith('.pdf')) return 'PdfLoader';
+    if (p.endsWith('.md') || p.endsWith('.txt')) return 'TextLoader';
+    return null;
+  }
+
+  var FAKE = {
+    'TextLoader': { text: '# 嵌入\n嵌入把文本变成向量。', meta: '{"path":"...","source":"file"}' },
+    'PdfLoader': { text: 'RAG: Retrieval-Augmented Generation …\n(逐页 extract_text 拼接)', meta: '{"path":"...","pages":12}' },
+    'WebLoader': { text: '正文段落…(已去掉 nav/footer/script)', meta: '{"path":"...","source":"web"}' }
+  };
+
+  function load(path) {
+    var loader = pick(path);
+    if (!loader) {
+      dispatchBox.innerHTML = '<code>' + path + '</code> → <span class="bad">没人认领</span>';
+      docBox.textContent = 'raise UnsupportedSourceError("' + path + '")\n# 明确报错,别假装能读';
+      docBox.classList.add('err');
+      return;
+    }
+    docBox.classList.remove('err');
+    dispatchBox.innerHTML = '<code>' + path + '</code> → <span class="good">' + loader + '</span>'
+      + ' <span class="muted">→ Document</span>';
+    var f = FAKE[loader];
+    docBox.textContent = 'Document(\n  text="' + f.text.replace(/\n/g, '\\n') + '",\n  metadata='
+      + f.meta + '\n)';
+  }
+
+  document.querySelectorAll('.src').forEach(function (b) {
+    b.addEventListener('click', function () {
+      document.querySelectorAll('.src').forEach(function (x) { x.classList.remove('on'); });
+      b.classList.add('on');
+      load(b.dataset.path);
+    });
+  });
+
+  // ---- quizzes ----
+  document.querySelectorAll('.quiz').forEach(function (quiz) {
+    var fb = quiz.querySelector('.feedback');
+    quiz.querySelectorAll('button').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        if (quiz.dataset.done) return;
+        var ok = btn.dataset.correct === 'true';
+        btn.classList.add(ok ? 'correct' : 'wrong');
+        if (!ok) {
+          var right = quiz.querySelector('button[data-correct="true"]');
+          if (right) right.classList.add('correct');
+        }
+        fb.textContent = ok
+          ? '\u2713 \u5bf9\u4e86\u3002'
+          : '\u518d\u60f3\u60f3\u201c\u7edd\u5bf9\u5b9a\u4f4d / \u53ea\u52a0\u52a0\u8f7d\u5668 / \u5f52\u4e00 Document\u201d\u2014\u2014\u6b63\u786e\u7b54\u6848\u5df2\u9ad8\u4eae\u3002';
+        quiz.dataset.done = '1';
+      });
+    });
+  });
+</script>
+
+<style>
+  /* lesson-local styles (promote to assets if reused) */
+  pre.code, pre.doc {
+    font-family: var(--mono); font-size: .73rem; line-height: 1.7;
+    background: #f1efe8; padding: .8rem 1rem; border-radius: 6px;
+    overflow-x: auto; white-space: pre; margin: .6rem 0 1rem;
+  }
+  .aside { font-size: .86rem; opacity: .82; border-left: 3px solid var(--accent); padding-left: .8rem; }
+  button.src { font-family: var(--mono); font-size: .74rem; cursor: pointer;
+    padding: .32rem .6rem; margin: 0 .35rem .35rem 0; border-radius: 6px;
+    border: 1px solid rgba(0,0,0,.2); background: var(--paper); color: var(--ink); }
+  button.src.on { border-color: var(--accent); background: rgba(122,31,31,.08); }
+  .dispatch { font-family: var(--serif); font-size: .92rem; margin: .3rem 0 .5rem; }
+  .dispatch code { font-family: var(--mono); font-size: .8rem; }
+  .dispatch .good { color: var(--good); font-weight: 600; }
+  .dispatch .bad { color: var(--accent); font-weight: 600; }
+  pre.doc { margin-top: 0; }
+  pre.doc.err { background: rgba(122,31,31,.07); color: var(--accent); }
+  .muted { opacity: .55; }
+</style>
+</body>
+</html>

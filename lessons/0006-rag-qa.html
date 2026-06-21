@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>0006 · RAG 问答:知识库第一次"会答话"</title>
+  <link rel="stylesheet" href="../assets/lesson.css" />
+</head>
+<body>
+<article class="lesson">
+
+  <p class="eyebrow">Lesson 0006 · 个人知识库</p>
+  <h1>RAG 问答:知识库第一次"会答话"</h1>
+  <p class="subtitle">把检索和生成串起来——你的第一个端到端垂直切片。</p>
+
+  <div class="win">
+    <strong>这一课的小胜利:</strong>你能输入一个问题,看着系统<strong>检索 → 拼提示 → 生成</strong>
+    一路跑完,给出一句<strong>带 [1][2] 出处的回答</strong>;并亲眼验证"资料里没有就老实说不知道"。
+    然后把这套串成你项目 <span class="layer">application</span> 的 <code>AnswerQuestion</code> 用例。
+  </div>
+
+  <div class="terms">
+    <p class="terms-head">先认词 · 本课会反复出现</p>
+    <dl>
+      <dt>RAG 问答 <span class="en">RAG QA</span></dt>
+      <dd>"检索 + 生成"合体:先查回相关原文,再让模型据此作答。本课把前五课拼成一条龙。</dd>
+      <dt>生成 <span class="en">Generation</span></dt>
+      <dd>把"资料 + 问题"交给大模型,让它写出自然语言回答的那一步。用你项目已有的 <code>LLMProvider</code>。</dd>
+      <dt>接地 / 有据 <span class="en">Grounding</span></dt>
+      <dd>让回答<strong>只基于检索到的资料</strong>,而不是模型瞎编。靠提示词约束 + 出处标注实现。</dd>
+      <dt>幻觉 <span class="en">Hallucination</span></dt>
+      <dd>模型一本正经编造没有依据的内容。RAG + "没依据就说不知道"正是为了压住它。</dd>
+      <dt>垂直切片 <span class="en">Vertical slice</span></dt>
+      <dd>打通"从输入到输出"的一条最小完整链路。先窄而通,再加宽。这一课就是第一刀。</dd>
+      <dt>用例 <span class="en">Use case</span></dt>
+      <dd>应用层里一个完整业务动作(这里=回答一个问题)。编排各端口,产出结果。</dd>
+    </dl>
+  </div>
+
+  <h2>把前五课接成一条龙</h2>
+  <p>
+    建库那半边你已经懂了(<a class="cite" href="0002-chunking.html">分块</a> ·
+    <a class="cite" href="0003-embeddings.html">嵌入</a> ·
+    <a class="cite" href="0004-vector-store.html">入库</a>);
+    问答这半边只差最后一步——<strong>生成</strong>。完整链路:
+  </p>
+  <div class="pipe">
+    <div class="step online"><b>嵌问题</b>问题→向量</div>
+    <div class="step online"><b>检索</b>取 top-k 块</div>
+    <div class="step online"><b>拼提示</b>资料+问题+约束</div>
+    <div class="step online"><b>生成</b>模型带出处作答</div>
+  </div>
+  <p>
+    前三步就是上一课的检索 <a class="cite" href="0005-retrieval.html">[L5]</a>;
+    这一课补上第四步,并强调一件事:<strong>让模型"有据才说,无据认怂"</strong>。
+  </p>
+
+  <h2>亲手跑一遍端到端</h2>
+  <p>
+    输入问题(或点下面的例子)。系统会逐阶段亮灯,最后给出<strong>带出处的回答</strong>。
+    试试最后那个"故意问不相关"的例子,看它如何<strong>老实认怂</strong> 👇
+  </p>
+
+  <div class="widget" id="rag">
+    <label for="q">你的问题</label>
+    <textarea id="q" style="min-height:3rem">向量库该怎么配置距离度量?</textarea>
+
+    <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.5rem 0">
+      <button class="ex" type="button">向量库该怎么配置距离度量?</button>
+      <button class="ex" type="button">分块的重叠一般取多少?</button>
+      <button class="ex" type="button">明天天气怎么样?</button>
+    </div>
+
+    <div class="pipe" id="stages" style="margin:.6rem 0">
+      <div class="step" data-s="0"><b>嵌问题</b><span>待运行</span></div>
+      <div class="step" data-s="1"><b>检索</b><span>待运行</span></div>
+      <div class="step" data-s="2"><b>拼提示</b><span>待运行</span></div>
+      <div class="step" data-s="3"><b>生成</b><span>待运行</span></div>
+    </div>
+
+    <label>回答(带出处)</label>
+    <div class="chunk" id="answer" style="background:#eef2ec;white-space:pre-wrap"></div>
+  </div>
+
+  <h2>关键:让它"无据认怂"</h2>
+  <p>
+    RAG 不是万能咒。如果检索没取到相关资料,正确做法是<strong>回答"不知道"</strong>,
+    而不是让模型硬编(那叫<em>幻觉</em>)。两道防线:
+  </p>
+  <p>
+    · <strong>提示词约束</strong>:"只根据资料回答;资料里没有就说不知道。"<br>
+    · <strong>分数门槛</strong>:最高相似度低于某个阈值,就直接判定"库里没有",根本不调用模型。
+  </p>
+
+  <h2>落到你的项目(里程碑)</h2>
+  <p>
+    这是你的<strong>第一个垂直切片</strong>。把上一课的检索,接上你<em>早就有的</em>
+    <code>LLMProvider</code>,组成一个 <span class="layer">application</span> 用例:
+  </p>
+  <p style="font-family:var(--mono);font-size:.74rem;background:#f1efe8;padding:.8rem 1rem;border-radius:6px;line-height:1.7">
+    # app/application/answer_question.py(应用层 · 编排检索 + 生成)<br>
+    class AnswerQuestion:<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;def __init__(self, retrieve: RetrieveContext, llm: LLMProvider): ...<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;async def run(self, question: str, k: int = 3) -&gt; Answer:<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;chunks = await self.retrieve.run(question, k)&nbsp;&nbsp;# 上一课<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;if not chunks: return Answer(text="不知道", sources=[])<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;prompt = build_prompt(question, chunks)&nbsp;&nbsp;# 带出处约束<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;text = await self.llm.chat(prompt)<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;return Answer(text=text, sources=[c.meta for c in chunks])
+  </p>
+  <p>
+    再加一个 <span class="layer">interface</span> 路由 <code>POST /knowledge/ask</code> 调它,
+    切片就贯通了:<strong>HTTP 进 → 检索 → 生成 → 带出处的 JSON 出</strong>。
+    这之后,0007+ 才开始横向加各种 Loader(PDF、网页、代码…)把库喂厚。
+  </p>
+
+  <h2>检验一下(凭记忆作答)</h2>
+
+  <div class="quiz" id="q1">
+    <div class="q">1. RAG 问答把哪两步串成一个端到端用例?</div>
+    <button data-correct="true">把检索和生成串起</button>
+    <button>把分块和嵌入串起</button>
+    <button>把加载和入库串起</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz" id="q2">
+    <div class="q">2. 为了让答案少编造、可追溯,提示词里最该加哪条指令?</div>
+    <button data-correct="true">没有依据就说不知道</button>
+    <button>让回答尽可能地详细</button>
+    <button>把同一问题多问几遍</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz" id="q3">
+    <div class="q">3. 这个组合"检索 + 调用 LLM"的问答用例,该放哪一层?</div>
+    <button data-correct="true">应用 application</button>
+    <button>领域 domain</button>
+    <button>接口 interface</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="source">
+    <span class="tag">Primary source · 先读这个</span>
+    <p style="margin:.5rem 0 0">
+      <a href="https://ollama.com/blog/embedding-models">Ollama · Embedding models</a> 的
+      <em>Example</em> 用三步(<code>ollama.embed</code> 入库 → <code>collection.query</code> 检索 →
+      <code>ollama.generate</code> 生成)跑通一个<strong>本地 RAG</strong>,正是你这一课要落的形状。
+      概念根源见 <a href="https://arxiv.org/abs/2005.11401">RAG 原论文 (Lewis et al., 2020)</a>:检索器 + 生成器联合作答。
+    </p>
+  </div>
+
+  <p class="teacher">
+    <strong>我是你的老师。</strong>"提示词模板怎么写更稳?""分数阈值设多少算'库里没有'?"
+    "回答要不要流式输出?"——这些都问我。
+    度量与检索细节见 <a href="../reference/similarity-cheatsheet.html">相似度速查表</a>。
+    下一课 <code>0007 加载器</code> 会带你写第一个真实 Loader(Markdown/纯文本),把库从"示例数据"喂成"你自己的资料"。
+  </p>
+
+  <p class="nav">
+    上一课 <a href="0005-retrieval.html">0005 检索</a> ·
+    工作区 <a href="../MISSION.md">MISSION</a> · <a href="../RESOURCES.md">RESOURCES</a> · <a href="../NOTES.md">NOTES</a>
+  </p>
+
+</article>
+
+<script>
+  // ---- end-to-end RAG demo (lexical retrieval + extractive "generation") ----
+  var qEl = document.getElementById('q');
+  var answer = document.getElementById('answer');
+  var stages = document.querySelectorAll('#stages .step');
+
+  var corpus = [
+    { text: '建集合时用 hnsw:space 选择距离度量,默认 l2,也可以设成 cosine 或 ip。', src: 'chroma.md · p2' },
+    { text: 'Chroma 是开源向量库,支持本地持久化,适合个人知识库离线使用。', src: 'chroma.md · p1' },
+    { text: '分块常用固定大小加重叠,重叠通常取块大小的百分之十到二十。', src: 'chunking.md · p1' },
+    { text: '嵌入模型把文本转成向量,意思相近的文本向量方向也相近。', src: 'embedding.md · p1' },
+    { text: '检索时把问题也嵌入成向量,取相似度最高的若干块作为出处。', src: 'retrieval.md · p1' }
+  ];
+  var THRESHOLD = 0.12; // 低于此分判定"库里没有"
+
+  function tokens(s) {
+    return (s.toLowerCase().match(/[a-z0-9]+|[\u4e00-\u9fff]/g)) || [];
+  }
+  function score(qt, text) {
+    var a = {}, b = {};
+    qt.forEach(function (w) { a[w] = (a[w] || 0) + 1; });
+    tokens(text).forEach(function (w) { b[w] = (b[w] || 0) + 1; });
+    var dot = 0, na = 0, nb = 0;
+    Object.keys(a).forEach(function (w) { na += a[w] * a[w]; if (b[w]) dot += a[w] * b[w]; });
+    Object.keys(b).forEach(function (w) { nb += b[w] * b[w]; });
+    return (na && nb) ? dot / (Math.sqrt(na) * Math.sqrt(nb)) : 0;
+  }
+
+  function setStage(idx, text, kind) {
+    var s = stages[idx];
+    s.className = 'step ' + (kind || '');
+    s.querySelector('span').textContent = text;
+  }
+
+  function run() {
+    var qt = tokens(qEl.value);
+    var scored = corpus
+      .map(function (c) { return { c: c, s: score(qt, c.text) }; })
+      .sort(function (x, y) { return y.s - x.s; });
+
+    setStage(0, '已向量化', 'online');
+    var top = scored.slice(0, 2).filter(function (o) { return o.s >= THRESHOLD; });
+    setStage(1, top.length + ' 块命中', top.length ? 'online' : 'offline');
+
+    if (top.length === 0) {
+      setStage(2, '跳过', 'offline');
+      setStage(3, '认怂', 'offline');
+      answer.textContent = '不知道 —— 知识库里没有与这个问题相关的资料。\n'
+        + '(最高相似度低于阈值,直接认怂,连模型都不必调用。)';
+      return;
+    }
+
+    setStage(2, '已拼装', 'online');
+    setStage(3, '已生成', 'online');
+
+    // extractive "answer": stitch retrieved chunks + citations (demo stand-in for an LLM)
+    var body = top.map(function (o, i) { return o.c.text + ' [' + (i + 1) + ']'; }).join(' ');
+    var cites = top.map(function (o, i) { return '[' + (i + 1) + '] ' + o.c.src; }).join('\n');
+    answer.textContent = '根据知识库:' + body + '\n\n出处:\n' + cites
+      + '\n\n(演示用:这里把取回的原文缝合成带出处的答案;真实里这一步由 LLM 完成。)';
+  }
+
+  qEl.addEventListener('input', run);
+  document.querySelectorAll('.ex').forEach(function (b) {
+    b.addEventListener('click', function () { qEl.value = b.textContent; run(); });
+  });
+  run();
+
+  // ---- quizzes ----
+  document.querySelectorAll('.quiz').forEach(function (quiz) {
+    var fb = quiz.querySelector('.feedback');
+    quiz.querySelectorAll('button').forEach(function (btn) {
+      if (btn.classList.contains('ex')) return;
+      btn.addEventListener('click', function () {
+        if (quiz.dataset.done) return;
+        var ok = btn.dataset.correct === 'true';
+        btn.classList.add(ok ? 'correct' : 'wrong');
+        if (!ok) {
+          var right = quiz.querySelector('button[data-correct="true"]');
+          if (right) right.classList.add('correct');
+        }
+        fb.textContent = ok ? '\u2713 \u5bf9\u4e86\u3002'
+          : '\u518d\u60f3\u60f3\u201c\u68c0\u7d22 + \u751f\u6210 / \u65e0\u636e\u8ba4\u6184 / \u7528\u4f8b\u5728\u5e94\u7528\u5c42\u201d\u2014\u2014\u6b63\u786e\u7b54\u6848\u5df2\u9ad8\u4eae\u3002';
+        quiz.dataset.done = '1';
+      });
+    });
+  });
+</script>
+</body>
+</html>

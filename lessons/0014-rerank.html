@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>0014 · 重排:召回一批,再精挑细选</title>
+  <link rel="stylesheet" href="../assets/lesson.css" />
+</head>
+<body>
+<article class="lesson">
+
+  <p class="eyebrow">Lesson 0014 · 个人知识库 · 提准</p>
+  <h1>重排 re-rank:先粗筛一批,再精挑前几</h1>
+  <p class="subtitle">向量召回又快又糙;加一道交叉编码器精排,把真正相关的那条顶上来。</p>
+
+  <div class="win">
+    <strong>这一课的小胜利:</strong>你能在第 5、10 课的检索之上,插一道<strong>重排</strong>:
+    先用向量库<strong>召回</strong>一批候选(比如 20 条),再用<strong>交叉编码器</strong>对
+    (问题, 候选) 逐对精排,只把最相关的前 3 条喂给生成。
+    答案的<strong>相关性</strong>肉眼可见地变好,而读路径只多挂一个适配器。
+  </div>
+
+  <div class="terms">
+    <p class="terms-head">先认词 · 本课会反复出现</p>
+    <dl>
+      <dt>双编码器 <span class="en">bi-encoder</span></dt>
+      <dd>问题、文档<em>各自</em>编码成向量再比距离(就是你现在的嵌入检索)。快,能扫海量,但略糙。</dd>
+      <dt>交叉编码器 <span class="en">cross-encoder</span></dt>
+      <dd>把 (问题, 文档) <em>一起</em>喂进模型,直接吐一个 0–1 相关分。准得多,但每对都要算一次,慢。</dd>
+      <dt>召回 <span class="en">retrieve / recall</span></dt>
+      <dd>第一阶段:向量库快速捞出一批<em>可能</em>相关的候选(top-N,宁多勿漏)。</dd>
+      <dt>精排 <span class="en">re-rank</span></dt>
+      <dd>第二阶段:只对那一批候选,用交叉编码器细评,重新排序,留 top-k。</dd>
+      <dt>候选集 <span class="en">candidate set</span></dt>
+      <dd>召回出的那 N 条。交叉编码器太贵,只能在这一小批上跑,不能对全库跑。</dd>
+      <dt>二阶段检索 <span class="en">two-stage</span></dt>
+      <dd>"快而广的召回 + 慢而准的精排"配合:用便宜的先缩小范围,把贵的算力花在刀刃上。</dd>
+    </dl>
+  </div>
+
+  <h2>为什么要两道工序</h2>
+  <p>
+    向量检索(双编码器)是<strong>各自</strong>编码再比距离,能秒扫整库,但有时把"字面像、其实不相关"的也排前面。
+    交叉编码器把问题和候选<strong>放一起</strong>读,判断更准——可它每对都要算,扫全库太慢。
+    所以套路是:<strong>先召回 20 条,再精排出 3 条</strong>。便宜的缩范围,贵的提精度。
+  </p>
+  <div class="pipe">
+    <div class="step offline"><b>问题</b></div>
+    <div class="step online"><b>召回</b> 向量库 top-20</div>
+    <div class="step online"><b>精排</b> 交叉编码器 → top-3</div>
+    <div class="step offline"><b>生成</b> 带出处作答</div>
+  </div>
+
+  <h2>亲手试:看精排怎么把"对的那条"顶上来</h2>
+  <p>
+    左边是<strong>只召回</strong>的排序(按字面相似),右边是<strong>召回+重排</strong>后的排序。
+    注意那条真正回答问题的片段,在右边被顶到了前面。
+    (交叉编码器分数是<strong>诚实替身</strong>,真实接法见下方代码。)
+  </p>
+
+  <div class="widget">
+    <p style="margin:0 0 .6rem"><b>问题:</b><span id="q">分块为什么不能切太大?</span></p>
+    <div class="cols">
+      <div class="col">
+        <div class="col-h">只召回(双编码器 · 字面)</div>
+        <ol class="rank" id="recall"></ol>
+      </div>
+      <div class="col">
+        <div class="col-h good">召回 + 重排(交叉编码器)</div>
+        <ol class="rank" id="rerank"></ol>
+      </div>
+    </div>
+    <p class="muted" id="note"></p>
+  </div>
+
+  <h2>落到你的项目:一个端口 + 一个适配器</h2>
+
+  <p><strong>① ReRanker 端口(domain)</strong></p>
+  <pre class="code">
+# app/domain/ports.py
+class ReRanker(Protocol):
+    def rerank(self, query: str, candidates: list[Chunk]) -&gt; list[Chunk]:
+        """按与 query 的相关性重新排序,返回从高到低的 candidates。"""
+        ...
+  </pre>
+
+  <p><strong>② 交叉编码器适配器(infrastructure)</strong></p>
+  <pre class="code">
+# app/infrastructure/rerank/cross_encoder.py
+from sentence_transformers import CrossEncoder   # pip install sentence-transformers
+
+class CrossEncoderReRanker:
+    def __init__(self, model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"):
+        self._model = CrossEncoder(model)        # 本地模型,离线可跑
+
+    def rerank(self, query: str, candidates: list[Chunk]) -&gt; list[Chunk]:
+        pairs = [(query, c.text) for c in candidates]
+        scores = self._model.predict(pairs)      # 每对一个 0~1 相关分
+        ranked = sorted(zip(candidates, scores), key=lambda x: x[1], reverse=True)
+        return [c for c, _ in ranked]
+  </pre>
+
+  <p><strong>③ 读路径改两阶段(application)</strong> —— 召回放大、精排收窄:</p>
+  <pre class="code">
+# app/application/retrieve_context.py
+class RetrieveContext:
+    def __init__(self, store: VectorStore, reranker: ReRanker):
+        self._store = store
+        self._reranker = reranker
+
+    def execute(self, query: str, k: int = 3, fetch: int = 20) -&gt; list[Chunk]:
+        candidates = self._store.search(query, k=fetch)   # 1) 召回放大到 20
+        ranked = self._reranker.rerank(query, candidates) # 2) 交叉编码器精排
+        return ranked[:k]                                 # 3) 只留前 k 条
+  </pre>
+
+  <p><strong>④ 组合根接线(interface/http/deps.py)</strong></p>
+  <pre class="code">
+# deps.py —— Container 里多造一个 reranker,注入 RetrieveContext
+self.reranker = CrossEncoderReRanker()                    # 唯一 import 具体实现处
+self.retrieve = RetrieveContext(store=self.store, reranker=self.reranker)
+# AnswerQuestion 仍调 self.retrieve.execute(query, k=3) —— 上层无感
+  </pre>
+  <p class="aside">
+    重排是<strong>纯增量</strong>:领域端口 + 基础设施适配器 + 一处接线。
+    用例 <code>AnswerQuestion</code> 和路由都不用改。慢的话,把 <code>fetch</code> 调小,或只在结果不理想时启用。
+  </p>
+
+  <h2>检验一下(凭记忆作答)</h2>
+
+  <div class="quiz" id="q1">
+    <div class="q">1. 交叉编码器比双编码器判断更准,代价是什么?</div>
+    <button data-correct="true">算得慢不能全量</button>
+    <button>完全离不开网络</button>
+    <button>必须先训练模型</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz" id="q2">
+    <div class="q">2. 为什么是"先召回一批、再只对它们精排"?</div>
+    <button data-correct="true">精排太贵只能少量</button>
+    <button>向量库放不下太多</button>
+    <button>召回本来就够准了</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz" id="q3">
+    <div class="q">3. 把重排接进读路径,主要改动落在哪一层?</div>
+    <button data-correct="true">基础设施加适配器</button>
+    <button>前端组件的渲染层</button>
+    <button>领域模型的值对象</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="source">
+    <span class="tag">Primary source · 先读这个</span>
+    <p style="margin:.5rem 0 0">
+      <a href="https://www.sbert.net/examples/sentence_transformer/applications/retrieve_rerank/README.html">SentenceTransformers · Retrieve &amp; Re-Rank</a>
+      讲清这套二阶段:先用双编码器召回约 100 条候选,再用交叉编码器对 (query, passage)
+      联合打分(输出 0–1 相关性)精排——"交叉编码器更准但慢,所以只在召回出的候选集上跑"。
+    </p>
+  </div>
+
+  <p class="teacher">
+    <strong>我是你的老师。</strong>"中文该选哪个交叉编码器模型?""能不能用 Ollama 当重排器?"
+    "<code>fetch</code> 设多大、<code>k</code> 留几条最划算?""重排太慢能不能加缓存?"——都问我。
+    下一课 <code>0015</code> 上<strong>自动化验收测试</strong>:把第 12 课那四步冒烟写成 pytest,
+    以后每次改完(包括今天这个重排)一键回归,确认没把已通的链路改坏。
+  </p>
+
+  <p class="nav">
+    上一课 <a href="0013-more-loaders.html">0013 更多 Loader</a> ·
+    工作区 <a href="../MISSION.md">MISSION</a> · <a href="../RESOURCES.md">RESOURCES</a> · <a href="../NOTES.md">NOTES</a>
+  </p>
+
+</article>
+
+<script>
+  // ---- rerank demo: bi-encoder order vs cross-encoder order (honest stand-in) ----
+  var CANDS = [
+    { id: 'chunk#2', text: '分块太大会稀释语义,检索命中后还混入大量无关内容。', lex: 0.71, ce: 0.93 },
+    { id: 'chunk#7', text: '分块的英文是 chunk,常见库都内置分块器。', lex: 0.82, ce: 0.34 },
+    { id: 'chunk#5', text: '块太大时,单块可能跨多个主题,削弱向量的区分度。', lex: 0.58, ce: 0.88 },
+    { id: 'chunk#1', text: '嵌入把文本变成向量,相似文本向量相近。', lex: 0.61, ce: 0.21 },
+    { id: 'chunk#9', text: '重叠切分能避免把一句话从中间劈开。', lex: 0.44, ce: 0.40 }
+  ];
+
+  function render(elId, key) {
+    var ol = document.getElementById(elId);
+    ol.innerHTML = '';
+    CANDS.slice().sort(function (a, b) { return b[key] - a[key]; }).forEach(function (c) {
+      var li = document.createElement('li');
+      li.innerHTML = '<code>' + c.id + '</code> <span class="sc">' + c[key].toFixed(2)
+        + '</span><br><span class="ct">' + c.text + '</span>';
+      ol.appendChild(li);
+    });
+  }
+  render('recall', 'lex');
+  render('rerank', 'ce');
+  document.getElementById('note').textContent =
+    '注意 chunk#7「字面像、其实跑题」在左边排第一,重排后掉到末尾;真正答题的 chunk#2 / #5 被顶上来。';
+
+  // ---- quizzes ----
+  document.querySelectorAll('.quiz').forEach(function (quiz) {
+    var fb = quiz.querySelector('.feedback');
+    quiz.querySelectorAll('button').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        if (quiz.dataset.done) return;
+        var ok = btn.dataset.correct === 'true';
+        btn.classList.add(ok ? 'correct' : 'wrong');
+        if (!ok) {
+          var right = quiz.querySelector('button[data-correct="true"]');
+          if (right) right.classList.add('correct');
+        }
+        fb.textContent = ok
+          ? '\u2713 \u5bf9\u4e86\u3002'
+          : '\u518d\u60f3\u60f3\u201c\u8d35\u800c\u51c6 / \u5148\u53ec\u56de\u540e\u7cbe\u6392 / \u52a0\u9002\u914d\u5668\u201d\u2014\u2014\u6b63\u786e\u7b54\u6848\u5df2\u9ad8\u4eae\u3002';
+        quiz.dataset.done = '1';
+      });
+    });
+  });
+</script>
+
+<style>
+  /* lesson-local styles (promote to assets if reused) */
+  pre.code {
+    font-family: var(--mono); font-size: .73rem; line-height: 1.7;
+    background: #f1efe8; padding: .8rem 1rem; border-radius: 6px;
+    overflow-x: auto; white-space: pre; margin: .6rem 0 1rem;
+  }
+  .aside { font-size: .86rem; opacity: .82; border-left: 3px solid var(--accent); padding-left: .8rem; }
+  .cols { display: flex; gap: 1rem; flex-wrap: wrap; }
+  .col { flex: 1 1 16rem; }
+  .col-h { font-family: var(--serif); font-size: .86rem; font-weight: 600; margin-bottom: .4rem; opacity: .85; }
+  .col-h.good { color: var(--good); }
+  ol.rank { margin: 0; padding-left: 1.3rem; }
+  ol.rank li { margin-bottom: .55rem; font-size: .82rem; line-height: 1.5; }
+  ol.rank code { font-family: var(--mono); font-size: .76rem; }
+  ol.rank .sc { font-family: var(--mono); font-size: .74rem; color: var(--accent); margin-left: .4rem; }
+  ol.rank .ct { opacity: .82; }
+  .muted { opacity: .62; font-size: .82rem; }
+</style>
+</body>
+</html>

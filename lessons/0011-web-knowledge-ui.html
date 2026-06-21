@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>0011 · 接前端:投喂 + 提问的小界面</title>
+  <link rel="stylesheet" href="../assets/lesson.css" />
+</head>
+<body>
+<article class="lesson">
+
+  <p class="eyebrow">Lesson 0011 · 个人知识库</p>
+  <h1>接前端:给你的知识库做一张脸</h1>
+  <p class="subtitle">后端闭环已通,这一课在 Web 上做"投喂 + 提问"两个动作,真正用起来。</p>
+
+  <div class="win">
+    <strong>这一课的小胜利:</strong>你能在 <code>privateknowledgebase.Web</code> 里照搬现有
+    <code>agent</code> 业务块的结构,新建一个 <code>knowledge</code> 业务块——
+    <strong>types 镜像后端 DTO、service 收口网络、hook 管加载态、组件只渲染</strong>,
+    把第 9–10 课的 <code>/ingest</code> 和 <code>/knowledge/ask</code> 接进界面。
+  </div>
+
+  <div class="terms">
+    <p class="terms-head">先认词 · 本课会反复出现</p>
+    <dl>
+      <dt>业务块 <span class="en">feature</span></dt>
+      <dd><code>src/features/knowledge/</code> 一整个文件夹:一个功能的 types/service/hook/组件全装在一起,自成一体。</dd>
+      <dt>网络层 <span class="en">service</span></dt>
+      <dd>业务块里<em>唯一</em>碰 <code>fetch</code> 的文件。别处不直接发请求,只调它——I/O 收口于一处。</dd>
+      <dt>状态钩子 <span class="en">hook</span></dt>
+      <dd><code>use client</code> 的 <code>useKnowledge()</code>:握住"投喂中/提问中/结果/报错"等状态,喂给组件。</dd>
+      <dt>DTO 镜像 <span class="en">mirror types</span></dt>
+      <dd>前端 <code>types.ts</code> 照抄后端的 <code>AskIn/AskOut</code> 字段。两边对得上,改一处就知道另一处要跟。</dd>
+      <dt>环境变量 <span class="en">NEXT_PUBLIC_</span></dt>
+      <dd><code>NEXT_PUBLIC_API_BASE_URL</code>:浏览器里能读到的后端地址,默认 <code>http://localhost:8001</code>。</dd>
+      <dt>加载态 <span class="en">loading state</span></dt>
+      <dd>请求在飞时按钮转圈、禁用重复提交;成功/失败各给反馈。好体验的最低要求。</dd>
+    </dl>
+  </div>
+
+  <h2>照搬一个你已有的样板</h2>
+  <p>
+    你项目里 <code>src/features/agent/</code> 已经是教科书式分层:
+    <code>types.ts</code> → <code>services/agent-api.ts</code> → <code>hooks/use-agent.ts</code> →
+    <code>components/agent-console.tsx</code> → <code>index.ts</code>。
+    这一课<strong>原样复制这套骨架</strong>,把名字从 agent 换成 knowledge,动作换成投喂/提问。
+    一条铁律:<strong>fetch 只许出现在 service 里</strong>。
+  </p>
+  <div class="pipe">
+    <div class="step online"><b>组件</b>只渲染 + 触发</div>
+    <div class="step online"><b>hook</b>管加载态/结果</div>
+    <div class="step offline"><b>service</b>唯一发 fetch</div>
+    <div class="step offline"><b>后端</b>/ingest · /knowledge/ask</div>
+  </div>
+
+  <h2>亲手试:投喂 → 提问</h2>
+  <p>
+    下面是这张界面的<strong>交互草样</strong>(本地内存,没真连后端)。左边粘一段笔记点"投喂",
+    右边问一句点"提问"。感受一下你要做的 UX 形状——真实接法见下方代码。
+  </p>
+
+  <div class="widget">
+    <div class="cols">
+      <div class="col">
+        <label>投喂资料 → <code>POST /ingest</code></label>
+        <textarea id="feed" spellcheck="false"># 嵌入
+嵌入把文本变成向量,相似的文本向量也相近。</textarea>
+        <p><button class="run" id="feedBtn">投喂</button>
+          <span class="stat" id="feedStat">库里 0 块</span></p>
+      </div>
+      <div class="col">
+        <label>提问 → <code>POST /knowledge/ask</code></label>
+        <input id="q" type="text" value="嵌入是什么?" />
+        <p><button class="run" id="askBtn">提问</button>
+          <span class="stat" id="askStat">就绪</span></p>
+        <div class="answer" id="answer"></div>
+      </div>
+    </div>
+  </div>
+
+  <h2>落到你的项目:复制四个文件 + 一处导航</h2>
+
+  <p><strong>① types</strong> — 镜像后端 DTO(第 9–10 课):</p>
+  <pre class="code">
+// src/features/knowledge/types.ts
+export interface IngestInput { path: string; content: string; }
+export interface IngestResult { path: string; chunks_ingested: number; }
+
+export interface Source { id: string; score: number; meta: Record&lt;string, unknown&gt;; }
+export interface AskInput { question: string; k?: number; }
+export interface AskResult { answer: string; sources: Source[]; }
+  </pre>
+
+  <p><strong>② service</strong> — 唯一发 fetch(沿用 agent-api 的 <code>request&lt;T&gt;</code> 写法):</p>
+  <pre class="code">
+// src/features/knowledge/services/knowledge-api.ts
+const API_BASE = (
+  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8001"
+).replace(/\/$/, "");
+
+async function request&lt;T&gt;(path: string, init?: RequestInit): Promise&lt;T&gt; {
+  const res = await fetch(`${API_BASE}${path}`, {
+    headers: { "Content-Type": "application/json" }, ...init,
+  });
+  if (!res.ok) throw new Error(`Request failed (${res.status})`);  // MDN: 404 也要自己判断
+  return (await res.json()) as T;
+}
+
+export function ingest(input: IngestInput) {
+  return request&lt;IngestResult&gt;("/ingest", { method: "POST", body: JSON.stringify(input) });
+}
+export function ask(input: AskInput) {
+  return request&lt;AskResult&gt;("/knowledge/ask", { method: "POST", body: JSON.stringify(input) });
+}
+  </pre>
+
+  <p><strong>③ hook</strong> — 管加载态,组件不碰网络:</p>
+  <pre class="code">
+// src/features/knowledge/hooks/use-knowledge.ts
+"use client";
+export function useKnowledge() {
+  const [asking, setAsking] = useState(false);
+  const [result, setResult] = useState&lt;AskResult | null&gt;(null);
+  const [error, setError] = useState&lt;string | null&gt;(null);
+
+  const submit = useCallback(async (question: string) =&gt; {
+    if (!question.trim()) return;
+    setAsking(true); setError(null); setResult(null);
+    try { setResult(await ask({ question, k: 3 })); }
+    catch (e) { setError(e instanceof Error ? e.message : "提问失败"); }
+    finally { setAsking(false); }
+  }, []);
+
+  return { asking, result, error, submit };
+}
+  </pre>
+
+  <p><strong>④ 组件 + 导航</strong> — 复用设计系统玻璃组件,侧栏加一项:</p>
+  <pre class="code">
+// src/features/knowledge/components/knowledge-panel.tsx  ("use client")
+//   用 design-system 的 GlassSurface / GlassInput,调 useKnowledge()
+// src/app/knowledge/page.tsx  ——  &lt;KnowledgePanel /&gt;
+// src/components/layout/sidebar.tsx  ——  加 { icon: BookText, label: "知识库", href: "/knowledge" }
+  </pre>
+  <p class="aside">
+    依赖方向不变:<code>app → features → design-system → lib</code>。
+    组件只 import 自己 feature 的 hook 和设计系统原子,绝不直接 <code>fetch</code>。
+  </p>
+
+  <h2>检验一下(凭记忆作答)</h2>
+
+  <div class="quiz" id="q1">
+    <div class="q">1. 在这套分层里,唯一允许写 <code>fetch</code>/网络 I/O 的地方是?</div>
+    <button data-correct="true">各自的网络服务文件</button>
+    <button>页面组件的渲染函数</button>
+    <button>全局状态管理的仓库</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz" id="q2">
+    <div class="q">2. 前端的 <code>types.ts</code> 为什么要"镜像"后端的 DTO 字段?</div>
+    <button data-correct="true">让前后端字段对得上</button>
+    <button>好让向量算得更准些</button>
+    <button>省去写网络层的麻烦</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz" id="q3">
+    <div class="q">3. <code>fetch()</code> 收到一个 404 响应时,它返回的 promise 会?</div>
+    <button data-correct="true">照常兑现,要自己判断</button>
+    <button>直接抛错,不必再检查</button>
+    <button>自动重试,直到成功后</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="source">
+    <span class="tag">Primary source · 先读这个</span>
+    <p style="margin:.5rem 0 0">
+      <a href="https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API/Using_Fetch">MDN · Using the Fetch API</a>
+      点明关键坑:<code>fetch()</code> <em>不会</em>因 404 而 reject,它照常兑现一个 <code>Response</code>——
+      所以必须先查 <code>response.ok</code> 再读 body,正是你 service 里那行 <code>if (!res.ok) throw</code>。
+      分层规则参见工作区的 <a href="../RESOURCES.md">RESOURCES</a> 与前端架构约定。
+    </p>
+  </div>
+
+  <p class="teacher">
+    <strong>我是你的老师。</strong>"后端要不要开 CORS 才能让浏览器访问 8001?"
+    "投喂大文件该用 <code>multipart/form-data</code> 还是先读成文本?""答案想流式显示怎么办?"——都问我。
+    下一课 <code>0012</code> 会做<strong>真实联调</strong>:同时起后端(8001)和前端(3000),
+    把这张界面接上真 Chroma,完成一次"从浏览器投喂、再从浏览器问出来"的端到端验收。
+  </p>
+
+  <p class="nav">
+    上一课 <a href="0010-ask-http-loop.html">0010 闭环 · POST /knowledge/ask</a> ·
+    工作区 <a href="../MISSION.md">MISSION</a> · <a href="../RESOURCES.md">RESOURCES</a> · <a href="../NOTES.md">NOTES</a>
+  </p>
+
+</article>
+
+<script>
+  // ---- UX sketch: feed (ingest) + ask, in-memory, honest stand-in ----
+  var STORE = [];
+  var feed = document.getElementById('feed');
+  var feedStat = document.getElementById('feedStat');
+  var qBox = document.getElementById('q');
+  var askStat = document.getElementById('askStat');
+  var ansBox = document.getElementById('answer');
+  var THRESHOLD = 0.06;
+
+  function stripMd(t) {
+    return t.replace(/^\s{0,3}#{1,6}\s+/gm, '').replace(/\s+/g, ' ').trim();
+  }
+  function chunk(text) {
+    var out = [], c = text; for (var i = 0; i < c.length; i += 24) out.push(c.slice(i, i + 24));
+    return out.length ? out : [''];
+  }
+  function tokens(s){ return (s.replace(/[，。?？!！、\s]/g,'').match(/[\u4e00-\u9fa5a-zA-Z]/g)||[]); }
+  function vec(t){ var v={}; t.forEach(function(x){ v[x]=(v[x]||0)+1; }); return v; }
+  function cosine(a,b){ var d=0,na=0,nb=0;
+    Object.keys(a).forEach(function(k){ na+=a[k]*a[k]; if(b[k]) d+=a[k]*b[k]; });
+    Object.keys(b).forEach(function(k){ nb+=b[k]*b[k]; });
+    return (na&&nb)? d/Math.sqrt(na*nb):0; }
+
+  function doFeed() {
+    var parts = chunk(stripMd(feed.value));
+    parts.forEach(function (p, i) { STORE.push({ id: 'note.md#' + (STORE.length), text: p }); });
+    feedStat.textContent = '✓ 库里 ' + STORE.length + ' 块';
+  }
+
+  function doAsk() {
+    var q = qBox.value.trim(); if (!q) return;
+    askStat.textContent = '提问中…'; ansBox.innerHTML = '';
+    setTimeout(function () {
+      if (!STORE.length) { askStat.textContent = '库是空的'; ansBox.innerHTML =
+        '<div class="muted">先在左边投喂点资料~</div>'; return; }
+      var qv = vec(tokens(q));
+      var ranked = STORE.map(function (c) { return { c: c, s: cosine(qv, vec(tokens(c.text))) }; })
+        .sort(function (a, b) { return b.s - a.s; });
+      if (ranked[0].s < THRESHOLD) {
+        askStat.textContent = '✓ 认怂';
+        ansBox.innerHTML = '<div class="ans-text">库里没找到,无法回答。</div>'; return;
+      }
+      var top = ranked.slice(0, 2).filter(function (r) { return r.s > 0; });
+      askStat.textContent = '✓ ' + top.length + ' 条出处';
+      ansBox.innerHTML = '<div class="ans-text"><b>答:</b>'
+        + top.map(function (r) { return r.c.text; }).join(' ')
+        + ' <span class="muted">(演示:真实由本地模型生成)</span></div>'
+        + '<div class="ans-src">' + top.map(function (r) {
+            return '<code>' + r.c.id + '</code>'; }).join(' · ') + '</div>';
+    }, 280);
+  }
+
+  document.getElementById('feedBtn').addEventListener('click', doFeed);
+  document.getElementById('askBtn').addEventListener('click', doAsk);
+  qBox.addEventListener('keydown', function (e) { if (e.key === 'Enter') doAsk(); });
+
+  // ---- quizzes ----
+  document.querySelectorAll('.quiz').forEach(function (quiz) {
+    var fb = quiz.querySelector('.feedback');
+    quiz.querySelectorAll('button').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        if (quiz.dataset.done) return;
+        var ok = btn.dataset.correct === 'true';
+        btn.classList.add(ok ? 'correct' : 'wrong');
+        if (!ok) {
+          var right = quiz.querySelector('button[data-correct="true"]');
+          if (right) right.classList.add('correct');
+        }
+        fb.textContent = ok
+          ? '\u2713 \u5bf9\u4e86\u3002'
+          : '\u518d\u60f3\u60f3\u201cI/O \u6536\u53e3 / DTO \u955c\u50cf / .ok \u81ea\u67e5\u201d\u2014\u2014\u6b63\u786e\u7b54\u6848\u5df2\u9ad8\u4eae\u3002';
+        quiz.dataset.done = '1';
+      });
+    });
+  });
+</script>
+
+<style>
+  /* lesson-local styles (promote to assets if reused) */
+  pre.code {
+    font-family: var(--mono); font-size: .73rem; line-height: 1.7;
+    background: #f1efe8; padding: .8rem 1rem; border-radius: 6px;
+    overflow-x: auto; white-space: pre; margin: .6rem 0 1rem;
+  }
+  .aside { font-size: .86rem; opacity: .82; border-left: 3px solid var(--accent); padding-left: .8rem; }
+  .cols { display: flex; gap: 1rem; flex-wrap: wrap; }
+  .col { flex: 1 1 16rem; }
+  .col label { font-size: .82rem; }
+  .widget textarea { width: 100%; box-sizing: border-box; font-family: var(--mono);
+    font-size: .8rem; min-height: 5.5rem; resize: vertical; padding: .5rem .6rem;
+    border: 1px solid rgba(0,0,0,.18); border-radius: 6px; background: var(--paper); color: var(--ink); }
+  .widget input[type="text"] { width: 100%; box-sizing: border-box; font-family: var(--serif);
+    font-size: .92rem; padding: .45rem .6rem; border: 1px solid rgba(0,0,0,.18);
+    border-radius: 6px; background: var(--paper); color: var(--ink); }
+  button.run { font-family: var(--serif); font-size: .9rem; cursor: pointer;
+    padding: .38rem .85rem; border-radius: 6px; border: 1px solid var(--accent);
+    background: var(--accent); color: #fff; }
+  .stat { font-family: var(--mono); font-size: .78rem; margin-left: .5rem; opacity: .8; }
+  .answer { margin-top: .4rem; }
+  .ans-text { font-size: .88rem; line-height: 1.6; }
+  .ans-src { font-family: var(--mono); font-size: .73rem; margin-top: .3rem; opacity: .85; }
+  .ans-src code { color: var(--accent); }
+  .muted { opacity: .55; font-size: .82rem; }
+</style>
+</body>
+</html>

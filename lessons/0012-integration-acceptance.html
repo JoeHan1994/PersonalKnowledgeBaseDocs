@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>0012 · 真实联调:从浏览器投喂、再问出来</title>
+  <link rel="stylesheet" href="../assets/lesson.css" />
+</head>
+<body>
+<article class="lesson">
+
+  <p class="eyebrow">Lesson 0012 · 个人知识库 · 里程碑</p>
+  <h1>真实联调:整条链路跑给自己看</h1>
+  <p class="subtitle">前后端同起,接上真 Chroma,完成一次端到端验收——你的知识库正式能用了。</p>
+
+  <div class="win">
+    <strong>这一课的小胜利:</strong>你能同时起后端(8001)和前端(3000),
+    把第 8–11 课的代码全接上,跑一遍<strong>端到端验收</strong>:
+    健康检查 → 投喂一份文件 → 提问拿到<strong>带出处</strong>的答案 → 问库外问题<strong>如实认怂</strong>。
+    全绿,就是你的本地 RAG 知识库第一次真正<strong>能用</strong>。
+  </div>
+
+  <div class="terms">
+    <p class="terms-head">先认词 · 本课会反复出现</p>
+    <dl>
+      <dt>联调 <span class="en">Integration</span></dt>
+      <dd>把各自写好的前端、后端、Chroma 接到一起,确认它们能<em>合作</em>,而不只是各自单测能过。</dd>
+      <dt>跨域 <span class="en">CORS</span></dt>
+      <dd>浏览器规矩:3000 的页面访问 8001 的后端属"跨域",后端要表态允许。你项目已配 <code>CORSMiddleware</code>。</dd>
+      <dt>来源 <span class="en">Origin</span></dt>
+      <dd>协议+域名+端口三者合一。<code>localhost:3000</code> 和 <code>localhost:8001</code> 是<em>不同</em>来源——这才需要 CORS。</dd>
+      <dt>健康检查 <span class="en">Health check</span></dt>
+      <dd><code>GET /health</code> 返回 200,确认后端活着。联调第一步,排除"根本没起来"。</dd>
+      <dt>冒烟测试 <span class="en">Smoke test</span></dt>
+      <dd>用几条最关键的请求快速验主流程通不通,不求覆盖全面,只求"没冒烟(没炸)"。</dd>
+      <dt>验收 <span class="en">Acceptance</span></dt>
+      <dd>站在用户角度跑真实场景:存得进、问得出、库外认怂。过了才算这个切片真的完成。</dd>
+    </dl>
+  </div>
+
+  <h2>联调前,补最后一处接线</h2>
+  <p>
+    第 9–10 课写的 <code>ingest</code>、<code>knowledge</code> 路由,还没注册进应用。
+    联调第一件事就是在 <code>main.py</code> 把它们挂上——否则请求会 404。
+    好消息:<strong>CORS 你早就配好了</strong>(<code>allow_origins=["*"]</code>),3000 直接能访问 8001。
+  </p>
+  <pre class="code">
+# app/main.py  ——  把新路由挂上(否则 /ingest、/knowledge/ask 都 404)
+from .interface.http.routers import agent, chat, ollama, providers, ingest, knowledge
+
+app.include_router(ingest.router)       # 第 9 课
+app.include_router(knowledge.router)    # 第 10 课
+
+# CORS 已存在,无需改动:
+# app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins,  # 默认 ["*"]
+#                    allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
+  </pre>
+  <p class="aside">
+    为什么 <code>allow_credentials=False</code> 能配 <code>["*"]</code>?CORS 规矩:通配 <code>"*"</code> 与
+    "带凭据(cookie)"不能并存。你这里不带凭据,所以 <code>["*"]</code> 合法又省事。
+  </p>
+
+  <h2>亲手试:跑一遍端到端验收</h2>
+  <p>
+    点 <strong>运行验收</strong>,逐条亮起(这是<strong>验收清单模拟</strong>,每条都对应下方一条真实命令)。
+    四条全绿,就是你这套切片的毕业证。
+  </p>
+
+  <div class="widget">
+    <p style="margin:0 0 .8rem">
+      <button class="run" id="run">运行验收</button>
+      <button class="run ghost" id="reset">重置</button>
+      <span class="stat" id="stat">就绪</span>
+    </p>
+    <div class="checks" id="checks"></div>
+    <div class="verdict" id="verdict"></div>
+  </div>
+
+  <h2>真实命令:照着敲一遍</h2>
+  <p>开两个终端,分别起服务:</p>
+  <pre class="code">
+# 终端 A — 后端(在 privateknowledgebase.API 目录)
+pip install chromadb            # 还没装的话
+uvicorn app.main:app --reload --port 8001
+
+# 终端 B — 前端(在 privateknowledgebase.Web 目录)
+npm run dev                     # http://localhost:3000
+  </pre>
+  <p>然后用 curl 跑四步冒烟(或直接在 3000 的页面点投喂/提问):</p>
+  <pre class="code">
+# 1) 后端活着?
+curl http://localhost:8001/health
+#   => {"status":"ok"}
+
+# 2) 投喂一份文件
+curl -X POST http://localhost:8001/ingest -H "Content-Type: application/json" \
+  -d '{"path":"notes/embeddings.md","content":"# 嵌入\n嵌入把文本变成向量。"}'
+#   => {"path":"notes/embeddings.md","chunks_ingested":1}
+
+# 3) 提问 —— 应拿到答案 + 出处
+curl -X POST http://localhost:8001/knowledge/ask -H "Content-Type: application/json" \
+  -d '{"question":"嵌入是什么?","k":3}'
+#   => {"answer":"...","sources":[{"id":"notes/embeddings.md#0", ...}]}
+
+# 4) 库外问题 —— 应如实认怂
+curl -X POST http://localhost:8001/knowledge/ask -H "Content-Type: application/json" \
+  -d '{"question":"明天天气怎么样?","k":3}'
+#   => {"answer":"我在库里没找到相关内容…","sources":[]}
+  </pre>
+  <p class="aside">
+    Chroma 把数据写到 <code>settings.chroma_path</code>(本地目录)。把它加进 <code>.gitignore</code>,
+    别把向量库提交进仓库。重启后端,数据还在——这就是<strong>持久化</strong>(第 9 课)。
+  </p>
+
+  <h2>检验一下(凭记忆作答)</h2>
+
+  <div class="quiz" id="q1">
+    <div class="q">1. 浏览器从 3000 访问 8001 的后端,要后端配什么才不被拦?</div>
+    <button data-correct="true">后端开启跨域许可</button>
+    <button>前端改用同一端口</button>
+    <button>把答案缓存到本地</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz" id="q2">
+    <div class="q">2. 新写的 ingest/knowledge 路由请求全 404,最先该检查?</div>
+    <button data-correct="true">是否已注册进应用</button>
+    <button>嵌入模型准不准确</button>
+    <button>前端样式有没有写</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz" id="q3">
+    <div class="q">3. 验收里"问库外问题应认怂"这一条,主要在测?</div>
+    <button data-correct="true">防幻觉的诚实底线</button>
+    <button>检索速度够不够快</button>
+    <button>前端样式好不好看</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="source">
+    <span class="tag">Primary source · 先读这个</span>
+    <p style="margin:.5rem 0 0">
+      <a href="https://fastapi.tiangolo.com/tutorial/cors/">FastAPI · CORS</a>
+      讲清"来源 = 协议+域名+端口",<code>localhost:3000</code> 与 <code>localhost:8001</code> 是不同来源,
+      后端须用 <code>CORSMiddleware</code> 列出允许来源(或 <code>["*"]</code>)——你项目已经这么配了。
+      前端那侧的 404 自查,见 <a href="https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API/Using_Fetch">MDN Using Fetch</a>(第 11 课)。
+    </p>
+  </div>
+
+  <p class="teacher">
+    <strong>我是你的老师。</strong>"验收脚本能不能写成 pytest 自动跑?""换台机器要带哪些文件?"
+    "想给答案配高亮的原文片段怎么做?"——都问我。
+    到这里,你最初的使命——<strong>"把乱七八糟的数据源收成能问答的个人知识库"</strong>——
+    已经端到端跑通了一条真实切片。下一课 <code>0013</code> 起,我们横向加料:
+    更多 Loader(PDF/网页)、重排(re-rank)、或把整条链路写成自动化验收测试。你挑一个方向。
+  </p>
+
+  <p class="nav">
+    上一课 <a href="0011-web-knowledge-ui.html">0011 接前端</a> ·
+    工作区 <a href="../MISSION.md">MISSION</a> · <a href="../RESOURCES.md">RESOURCES</a> · <a href="../NOTES.md">NOTES</a>
+  </p>
+
+</article>
+
+<script>
+  // ---- acceptance run: 4 checks light up green (honest checklist sim) ----
+  var CHECKS = [
+    { name: 'GET /health', detail: '后端活着 · 200 {"status":"ok"}' },
+    { name: 'POST /ingest', detail: '投喂一份文件 · chunks_ingested = 1' },
+    { name: 'POST /knowledge/ask', detail: '提问 · 返回答案 + sources(带出处)' },
+    { name: 'POST /knowledge/ask (库外)', detail: '问"明天天气" · 认怂 · sources: []' }
+  ];
+
+  var checksBox = document.getElementById('checks');
+  var verdictBox = document.getElementById('verdict');
+  var statBox = document.getElementById('stat');
+  var running = false;
+
+  function reset() {
+    checksBox.innerHTML = '';
+    verdictBox.innerHTML = '';
+    statBox.textContent = '就绪';
+    CHECKS.forEach(function (c, i) {
+      var row = document.createElement('div');
+      row.className = 'check';
+      row.id = 'chk' + i;
+      row.innerHTML = '<span class="dot"></span><span class="cname">' + c.name
+        + '</span><span class="cdetail">' + c.detail + '</span>';
+      checksBox.appendChild(row);
+    });
+  }
+
+  function run() {
+    if (running) return;
+    running = true;
+    reset();
+    statBox.textContent = '验收中…';
+    CHECKS.forEach(function (c, i) {
+      setTimeout(function () {
+        var row = document.getElementById('chk' + i);
+        row.classList.add('pass');
+        if (i === CHECKS.length - 1) {
+          statBox.textContent = '✓ 4/4 通过';
+          verdictBox.innerHTML = '<div class="ok">验收通过 — 你的本地知识库端到端跑通了。'
+            + '<br><span class="muted">存得进 · 问得出 · 库外认怂。使命达成一条真实切片。</span></div>';
+          running = false;
+        }
+      }, (i + 1) * 480);
+    });
+  }
+
+  document.getElementById('run').addEventListener('click', run);
+  document.getElementById('reset').addEventListener('click', function () { running = false; reset(); });
+  reset();
+
+  // ---- quizzes ----
+  document.querySelectorAll('.quiz').forEach(function (quiz) {
+    var fb = quiz.querySelector('.feedback');
+    quiz.querySelectorAll('button').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        if (quiz.dataset.done) return;
+        var ok = btn.dataset.correct === 'true';
+        btn.classList.add(ok ? 'correct' : 'wrong');
+        if (!ok) {
+          var right = quiz.querySelector('button[data-correct="true"]');
+          if (right) right.classList.add('correct');
+        }
+        fb.textContent = ok
+          ? '\u2713 \u5bf9\u4e86\u3002'
+          : '\u518d\u60f3\u60f3\u201c\u8de8\u57df / \u6302\u8def\u7531 / \u8ba4\u601c\u201d\u2014\u2014\u6b63\u786e\u7b54\u6848\u5df2\u9ad8\u4eae\u3002';
+        quiz.dataset.done = '1';
+      });
+    });
+  });
+</script>
+
+<style>
+  /* lesson-local styles (promote to assets if reused) */
+  pre.code {
+    font-family: var(--mono); font-size: .73rem; line-height: 1.7;
+    background: #f1efe8; padding: .8rem 1rem; border-radius: 6px;
+    overflow-x: auto; white-space: pre; margin: .6rem 0 1rem;
+  }
+  .aside { font-size: .86rem; opacity: .82; border-left: 3px solid var(--accent); padding-left: .8rem; }
+  button.run { font-family: var(--serif); font-size: .92rem; cursor: pointer;
+    padding: .42rem .9rem; border-radius: 6px; border: 1px solid var(--accent);
+    background: var(--accent); color: #fff; }
+  button.run.ghost { background: transparent; color: var(--accent); }
+  .stat { font-family: var(--mono); font-size: .82rem; margin-left: .6rem; opacity: .8; }
+  .checks { display: flex; flex-direction: column; gap: .4rem; }
+  .check { display: grid; grid-template-columns: 1.4rem 13rem 1fr; gap: .5rem; align-items: baseline;
+    padding: .4rem .5rem; border-radius: 6px; background: rgba(0,0,0,.03); transition: background .3s; }
+  .check .dot { width: .7rem; height: .7rem; border-radius: 50%; align-self: center;
+    background: rgba(0,0,0,.18); transition: background .3s; }
+  .check .cname { font-family: var(--mono); font-size: .78rem; }
+  .check .cdetail { font-size: .82rem; opacity: .8; }
+  .check.pass { background: rgba(47,93,58,.12); }
+  .check.pass .dot { background: var(--good); }
+  .verdict { margin-top: .7rem; }
+  .verdict .ok { font-size: .92rem; color: var(--good); font-weight: 600; }
+  .muted { opacity: .6; font-size: .82rem; font-weight: 400; }
+</style>
+</body>
+</html>
