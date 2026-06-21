@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>课程目录 · 本地 RAG 知识库</title>
+  <link rel="stylesheet" href="assets/lesson.css" />
+</head>
+<body>
+<article class="lesson">
+
+  <p class="eyebrow">Course · Index</p>
+  <h1>本地 RAG 知识库 · 课程目录</h1>
+  <p class="subtitle">16 课,从"为什么要检索增强"一路走到"能跑、能测、能量化收益"的本地、隐私优先知识库。点任意一课进入。</p>
+
+  <div class="win">
+    <strong>怎么读这门课:</strong>四个阶段层层递进——<em>① 心智与零件</em> 建立直觉,
+    <em>② 打通端到端切片</em> 让单一数据源跑通闭环,<em>③ 提质</em> 把检索做准,
+    <em>④ 工程化与度量</em> 守住成果并用数字证明收益。想看全局关系,去
+    <a href="knowledge-graph.html">知识图谱</a>。
+  </div>
+
+  <div class="bar">
+    <a class="chip" href="knowledge-graph.html">🕸 知识图谱</a>
+    <a class="chip" href="reference/cookbook.html">📓 通用代码手册</a>
+    <a class="chip" href="reference/chunking-cheatsheet.html">✂ 分块速查</a>
+    <a class="chip" href="reference/similarity-cheatsheet.html">📐 相似度速查</a>
+  </div>
+
+  <!-- ① -->
+  <section class="phase" data-color="part">
+    <h2><span class="ph-tag">①</span> 心智与零件 <span class="ph-sub">RAG 的直觉 + 五个基础积木</span></h2>
+    <ol class="toc">
+      <li><a href="lessons/0001-rag-pipeline-mental-model.html"><b>0001</b> RAG 全景<span>整条管线的心智模型:为什么纯大模型不够,检索如何补上证据。</span></a></li>
+      <li><a href="lessons/0002-chunking.html"><b>0002</b> 分块<span>定长窗口 + 重叠;<code>chunk_size</code> 与 <code>overlap</code> 两个旋钮。</span></a></li>
+      <li><a href="lessons/0003-embeddings.html"><b>0003</b> 嵌入<span>文本→向量,余弦相似度,<code>Embedder</code> 端口与本地 Ollama 实现。</span></a></li>
+      <li><a href="lessons/0004-vector-store.html"><b>0004</b> 向量库<span>Chroma 持久化;<code>VectorStore</code> 接口(存 / 查)。</span></a></li>
+      <li><a href="lessons/0005-retrieval.html"><b>0005</b> 检索<span>嵌问题 → 查 top-k → 组装成带出处的上下文。</span></a></li>
+    </ol>
+  </section>
+
+  <!-- ② -->
+  <section class="phase" data-color="slice">
+    <h2><span class="ph-tag">②</span> 打通端到端切片 <span class="ph-sub">单一数据源跑通"投喂→提问→带出处作答"</span></h2>
+    <ol class="toc">
+      <li><a href="lessons/0006-rag-qa.html"><b>0006</b> RAG 问答用例<span>把检索与生成串成第一个端到端切片(认怂 + 出处约束)。</span></a></li>
+      <li><a href="lessons/0007-loaders.html"><b>0007</b> 加载器<span>异构来源 → 统一 <code>Document</code>;注册表按格式分发。</span></a></li>
+      <li><a href="lessons/0008-ingest-usecase.html"><b>0008</b> 入库用例<span>稳定 id + 幂等:同一份资料重存不产生重复块。</span></a></li>
+      <li><a href="lessons/0009-http-chroma-adapter.html"><b>0009</b> 接 HTTP<span><code>POST /ingest</code> + Chroma 适配器,写路径上线。</span></a></li>
+      <li><a href="lessons/0010-ask-http-loop.html"><b>0010</b> 闭环<span><code>POST /knowledge/ask</code> 接 HTTP,与入库共享同一个库实例。</span></a></li>
+      <li><a href="lessons/0011-web-knowledge-ui.html"><b>0011</b> 接前端<span>Web knowledge 业务块:投喂 + 提问的 UI。</span></a></li>
+      <li><a href="lessons/0012-integration-acceptance.html"><b>0012</b> 真实联调<span>前后端同起,端到端验收整条切片。</span></a></li>
+    </ol>
+  </section>
+
+  <!-- ③ -->
+  <section class="phase" data-color="boost">
+    <h2><span class="ph-tag">③</span> 提质 <span class="ph-sub">把库喂厚、把检索做准</span></h2>
+    <ol class="toc">
+      <li><a href="lessons/0013-more-loaders.html"><b>0013</b> 更多 Loader<span>PDF + 网页加载,注册表分发;加格式不动主管线。</span></a></li>
+      <li><a href="lessons/0014-rerank.html"><b>0014</b> 重排<span>召回放大(top-20)+ 交叉编码器精排,只留最相关的几个。</span></a></li>
+    </ol>
+  </section>
+
+  <!-- ④ -->
+  <section class="phase" data-color="measure">
+    <h2><span class="ph-tag">④</span> 工程化与度量 <span class="ph-sub">守住成果 + 用数字证明收益</span></h2>
+    <ol class="toc">
+      <li><a href="lessons/0015-acceptance-tests.html"><b>0015</b> 自动化验收测试<span>pytest + TestClient + 依赖覆盖,一键回归。</span></a></li>
+      <li><a href="lessons/0016-retrieval-eval.html"><b>0016</b> 检索评测<span>黄金集 · 命中率 / MRR / 召回率,量化重排到底有没有用。</span></a></li>
+    </ol>
+  </section>
+
+  <p class="nav">
+    工作笔记 <a href="NOTES.md">NOTES</a> ·
+    全局关系 <a href="knowledge-graph.html">知识图谱</a> ·
+    代码 <a href="reference/cookbook.html">通用手册</a>
+  </p>
+
+</article>
+
+<style>
+  .bar { display: flex; flex-wrap: wrap; gap: .5rem; margin: 1.2rem 0 1.8rem; }
+  .chip {
+    font-family: var(--mono); font-size: .76rem; text-decoration: none;
+    color: var(--ink); background: #f1efe8; border: 1px solid #e2ddcf;
+    padding: .35rem .7rem; border-radius: 999px; transition: .15s;
+  }
+  .chip:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+  .phase { margin: 2rem 0; }
+  .phase h2 { display: flex; align-items: baseline; gap: .6rem; }
+  .ph-tag {
+    display: inline-grid; place-items: center; width: 1.5rem; height: 1.5rem;
+    border-radius: 6px; color: #fff; font-size: .85rem; flex: none;
+  }
+  .ph-sub { font-size: .82rem; font-weight: 400; opacity: .7; }
+  .phase[data-color="part"]    .ph-tag { background: #7a1f1f; }
+  .phase[data-color="slice"]   .ph-tag { background: #2f5d3a; }
+  .phase[data-color="boost"]   .ph-tag { background: #b45309; }
+  .phase[data-color="measure"] .ph-tag { background: #1d4ed8; }
+
+  ol.toc { list-style: none; margin: .6rem 0 0; padding: 0; }
+  ol.toc li { margin: 0 0 .45rem; }
+  ol.toc a {
+    display: block; position: relative; line-height: 1.5;
+    text-decoration: none; color: var(--ink); font-weight: 600;
+    padding: .6rem .85rem .6rem 3.9rem; border-radius: 8px;
+    border: 1px solid transparent; transition: .15s;
+  }
+  ol.toc a:hover { background: #f1efe8; border-color: #e2ddcf; }
+  ol.toc b {
+    position: absolute; left: .85rem; top: .62rem;
+    font-family: var(--mono); font-size: .82rem; color: var(--accent);
+  }
+  ol.toc span { display: block; font-size: .86rem; font-weight: 400; opacity: .82; margin-top: .15rem; }
+  .phase[data-color="part"]    ol.toc b { color: #7a1f1f; }
+  .phase[data-color="slice"]   ol.toc b { color: #2f5d3a; }
+  .phase[data-color="boost"]   ol.toc b { color: #b45309; }
+  .phase[data-color="measure"] ol.toc b { color: #1d4ed8; }
+</style>
+</body>
+</html>

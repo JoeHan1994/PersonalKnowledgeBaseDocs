@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>知识图谱 · 本地 RAG 知识库</title>
+  <link rel="stylesheet" href="assets/lesson.css" />
+</head>
+<body>
+<article class="lesson">
+
+  <p class="eyebrow">Course · Knowledge Graph</p>
+  <h1>知识图谱:16 课如何环环相扣</h1>
+  <p class="subtitle">实线 = 数据流向(投喂 → 入库 → 检索 → 生成),虚线 = 概念依赖。把鼠标移到任意节点高亮它的上下游;点一下进入那一课。</p>
+
+  <div class="win">
+    <strong>怎么看这张图:</strong>上排是<em>写路径</em>(把资料喂进库),中间的<strong>向量库</strong>是枢纽,
+    下排是<em>读路径</em>(根据问题取回证据再作答)。右侧 <strong>HTTP 接口 / 前端</strong> 把闭环暴露出去,
+    底部与右上的<strong>评测 / 测试</strong>负责守住质量。回到 <a href="index.html">课程目录</a>。
+  </div>
+
+  <div class="legend" id="legend"></div>
+
+  <div class="graph-wrap">
+    <svg id="graph" viewBox="0 0 1100 740" role="img" aria-label="RAG 课程知识图谱"></svg>
+  </div>
+
+  <p class="hint">提示:节点按阶段配色;移上去看它直接相连的课;实线随数据流动,虚线是"用到同一个零件/概念"。</p>
+
+  <p class="nav">
+    <a href="index.html">课程目录</a> ·
+    <a href="reference/cookbook.html">通用代码手册</a> ·
+    <a href="lessons/0001-rag-pipeline-mental-model.html">从第一课开始</a>
+  </p>
+
+</article>
+
+<style>
+  .graph-wrap {
+    border: 1px solid #e2ddcf; border-radius: 12px; background:
+      radial-gradient(circle at 1px 1px, #e9e4d6 1px, transparent 0) 0 0 / 22px 22px,
+      var(--paper);
+    overflow-x: auto; padding: .4rem;
+  }
+  #graph { width: 100%; min-width: 760px; height: auto; display: block; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: .8rem; margin: 1rem 0; font-size: .8rem; }
+  .legend span { display: inline-flex; align-items: center; gap: .4rem; }
+  .legend i { width: .85rem; height: .85rem; border-radius: 3px; display: inline-block; }
+
+  .edge { stroke: #b9b09a; stroke-width: 2; fill: none; transition: .15s; }
+  .edge.dashed { stroke-dasharray: 5 5; stroke: #cfc6b0; }
+  .elabel { font-family: var(--mono); font-size: 11px; fill: #8a8266; }
+
+  .node { cursor: pointer; transition: .15s; }
+  .node rect { rx: 9; transition: .15s; }
+  .node .num { font-family: var(--mono); font-size: 12px; fill: #fff; opacity: .85; }
+  .node .ttl { font-family: var(--serif); font-size: 15px; fill: #fff; font-weight: 600; }
+  .node:hover rect, .node:focus rect { filter: brightness(1.12); }
+  .node:focus { outline: none; }
+
+  /* highlight state */
+  svg.focusing .edge { opacity: .12; }
+  svg.focusing .elabel { opacity: .12; }
+  svg.focusing .node { opacity: .25; }
+  svg.focusing .edge.hot { opacity: 1; stroke: var(--accent); stroke-width: 2.6; }
+  svg.focusing .elabel.hot { opacity: 1; fill: var(--accent); }
+  svg.focusing .node.hot { opacity: 1; }
+  .hint { font-size: .82rem; opacity: .7; }
+</style>
+
+<script>
+(function () {
+  const SVGNS = "http://www.w3.org/2000/svg";
+  const W = 160, H = 58;                       // node box size
+  const PHASE = {
+    mind:    { c: "#6b7280", label: "心智(0001)" },
+    part:    { c: "#7a1f1f", label: "零件(0002–0005)" },
+    slice:   { c: "#2f5d3a", label: "端到端切片(0006–0012)" },
+    boost:   { c: "#b45309", label: "提质(0013–0014)" },
+    measure: { c: "#1d4ed8", label: "工程化 / 度量(0015–0016)" },
+  };
+
+  const nodes = [
+    { id: "l1",  num: "0001",      ttl: "RAG 全景",     x: 440, y: 24,  phase: "mind",    href: "lessons/0001-rag-pipeline-mental-model.html" },
+    { id: "l7",  num: "0007·0013", ttl: "加载器",       x: 30,  y: 150, phase: "slice",   href: "lessons/0007-loaders.html" },
+    { id: "l2",  num: "0002",      ttl: "分块",         x: 250, y: 150, phase: "part",    href: "lessons/0002-chunking.html" },
+    { id: "l3",  num: "0003",      ttl: "嵌入",         x: 470, y: 150, phase: "part",    href: "lessons/0003-embeddings.html" },
+    { id: "l8",  num: "0008",      ttl: "入库用例",     x: 690, y: 150, phase: "slice",   href: "lessons/0008-ingest-usecase.html" },
+    { id: "l4",  num: "0004",      ttl: "向量库 Chroma", x: 690, y: 330, phase: "part",    href: "lessons/0004-vector-store.html" },
+    { id: "l5",  num: "0005",      ttl: "检索",         x: 470, y: 510, phase: "part",    href: "lessons/0005-retrieval.html" },
+    { id: "l14", num: "0014",      ttl: "重排",         x: 250, y: 510, phase: "boost",   href: "lessons/0014-rerank.html" },
+    { id: "l6",  num: "0006",      ttl: "RAG 问答",     x: 30,  y: 510, phase: "slice",   href: "lessons/0006-rag-qa.html" },
+    { id: "l9",  num: "0009·0010", ttl: "HTTP 接口",    x: 910, y: 330, phase: "slice",   href: "lessons/0009-http-chroma-adapter.html" },
+    { id: "l11", num: "0011·0012", ttl: "前端",         x: 910, y: 510, phase: "slice",   href: "lessons/0011-web-knowledge-ui.html" },
+    { id: "l15", num: "0015",      ttl: "验收测试",     x: 910, y: 150, phase: "measure", href: "lessons/0015-acceptance-tests.html" },
+    { id: "l16", num: "0016",      ttl: "检索评测",     x: 470, y: 660, phase: "measure", href: "lessons/0016-retrieval-eval.html" },
+  ];
+
+  const edges = [
+    // 写路径
+    { from: "l7", to: "l2",  label: "切块" },
+    { from: "l2", to: "l3",  label: "嵌入" },
+    { from: "l3", to: "l8",  label: "组块" },
+    { from: "l8", to: "l4",  label: "入库 upsert" },
+    // 读路径
+    { from: "l4", to: "l5",  label: "查 top-k" },
+    { from: "l5", to: "l14", label: "精排" },
+    { from: "l14", to: "l6", label: "生成" },
+    // 跨接:查询用同一个嵌入器
+    { from: "l3", to: "l5",  label: "同款嵌入", dashed: true },
+    // 接口 / 前端
+    { from: "l8", to: "l9",  label: "POST /ingest" },
+    { from: "l4", to: "l9",  label: "经 HTTP 暴露" },
+    { from: "l9", to: "l11", label: "前端调用" },
+    // 度量
+    { from: "l15", to: "l9", label: "测接口" },
+    { from: "l16", to: "l5", label: "量化召回" },
+    { from: "l16", to: "l14", label: "量化重排" },
+    // 概念
+    { from: "l1", to: "l7", dashed: true },
+    { from: "l1", to: "l6", dashed: true },
+  ];
+
+  const svg = document.getElementById("graph");
+  const byId = Object.fromEntries(nodes.map(n => [n.id, n]));
+  const center = n => ({ cx: n.x + W / 2, cy: n.y + H / 2 });
+
+  // adjacency for highlight
+  const adj = {};
+  nodes.forEach(n => (adj[n.id] = { nodes: new Set([n.id]), edges: new Set() }));
+
+  const edgeEls = [];
+  edges.forEach((e, i) => {
+    const a = center(byId[e.from]), b = center(byId[e.to]);
+    const line = document.createElementNS(SVGNS, "line");
+    line.setAttribute("x1", a.cx); line.setAttribute("y1", a.cy);
+    line.setAttribute("x2", b.cx); line.setAttribute("y2", b.cy);
+    line.setAttribute("class", "edge" + (e.dashed ? " dashed" : ""));
+    line.dataset.idx = i;
+    svg.appendChild(line);
+
+    let lbl = null;
+    if (e.label) {
+      lbl = document.createElementNS(SVGNS, "text");
+      lbl.setAttribute("x", (a.cx + b.cx) / 2);
+      lbl.setAttribute("y", (a.cy + b.cy) / 2 - 4);
+      lbl.setAttribute("text-anchor", "middle");
+      lbl.setAttribute("class", "elabel");
+      lbl.textContent = e.label;
+      svg.appendChild(lbl);
+    }
+    edgeEls.push({ line, lbl });
+
+    adj[e.from].nodes.add(e.to); adj[e.from].edges.add(i);
+    adj[e.to].nodes.add(e.from); adj[e.to].edges.add(i);
+  });
+
+  // nodes on top
+  const nodeEls = {};
+  nodes.forEach(n => {
+    const g = document.createElementNS(SVGNS, "g");
+    g.setAttribute("class", "node");
+    g.setAttribute("transform", `translate(${n.x},${n.y})`);
+    g.setAttribute("tabindex", "0");
+    g.setAttribute("role", "link");
+    g.setAttribute("aria-label", n.num + " " + n.ttl);
+
+    const rect = document.createElementNS(SVGNS, "rect");
+    rect.setAttribute("width", W); rect.setAttribute("height", H);
+    rect.setAttribute("fill", PHASE[n.phase].c);
+    g.appendChild(rect);
+
+    const num = document.createElementNS(SVGNS, "text");
+    num.setAttribute("class", "num");
+    num.setAttribute("x", 14); num.setAttribute("y", 23);
+    num.textContent = n.num;
+    g.appendChild(num);
+
+    const ttl = document.createElementNS(SVGNS, "text");
+    ttl.setAttribute("class", "ttl");
+    ttl.setAttribute("x", 14); ttl.setAttribute("y", 43);
+    ttl.textContent = n.ttl;
+    g.appendChild(ttl);
+
+    const go = () => (window.location.href = n.href);
+    g.addEventListener("click", go);
+    g.addEventListener("keydown", ev => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); go(); } });
+    g.addEventListener("mouseenter", () => focus(n.id));
+    g.addEventListener("mouseleave", clearFocus);
+    g.addEventListener("focus", () => focus(n.id));
+    g.addEventListener("blur", clearFocus);
+
+    svg.appendChild(g);
+    nodeEls[n.id] = g;
+  });
+
+  function focus(id) {
+    svg.classList.add("focusing");
+    const hot = adj[id];
+    nodes.forEach(n => nodeEls[n.id].classList.toggle("hot", hot.nodes.has(n.id)));
+    edgeEls.forEach((e, i) => {
+      const on = hot.edges.has(i);
+      e.line.classList.toggle("hot", on);
+      if (e.lbl) e.lbl.classList.toggle("hot", on);
+    });
+  }
+  function clearFocus() {
+    svg.classList.remove("focusing");
+    Object.values(nodeEls).forEach(g => g.classList.remove("hot"));
+    edgeEls.forEach(e => { e.line.classList.remove("hot"); if (e.lbl) e.lbl.classList.remove("hot"); });
+  }
+
+  // legend
+  const legend = document.getElementById("legend");
+  Object.values(PHASE).forEach(p => {
+    const s = document.createElement("span");
+    s.innerHTML = `<i style="background:${p.c}"></i>${p.label}`;
+    legend.appendChild(s);
+  });
+})();
+</script>
+</body>
+</html>
