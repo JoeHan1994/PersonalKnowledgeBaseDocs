@@ -1,0 +1,541 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>通用代码手册 · 本地 RAG 知识库(可直接复用)</title>
+  <link rel="stylesheet" href="../assets/lesson.css" />
+</head>
+<body>
+<article class="lesson">
+
+  <p class="eyebrow">Reference · Cookbook</p>
+  <h1>通用代码手册:从零搭一个本地 RAG 知识库</h1>
+  <p class="subtitle">把 0001–0016 各课的示例代码抽出来,去掉项目专有耦合,改成任何人可直接拿走的通用版。每段都附"做什么 + 为什么这么写"。</p>
+
+  <div class="win">
+    <strong>怎么用这份手册:</strong>这里所有代码<strong>不依赖任何特定项目</strong>——统一放进一个中性的
+    <code>rag/</code> 包(以及一个 <code>api.py</code> 和前端两个文件)。
+    技术栈:<strong>Python + 本地 Ollama(嵌入)+ Chroma(向量库)+ FastAPI(HTTP)+ Next.js(前端)</strong>。
+    每块代码先说<em>做什么</em>,再说<em>为什么这么写</em>。按顺序拼起来就是一套能跑的最小知识库。
+  </div>
+
+  <div class="terms">
+    <p class="terms-head">先装依赖 · 一次到位</p>
+    <dl>
+      <dt>Python 包 <span class="en">pip</span></dt>
+      <dd><code>pip install chromadb httpx pypdf beautifulsoup4 fastapi "uvicorn[standard]" sentence-transformers pytest</code></dd>
+      <dt>本地模型 <span class="en">Ollama</span></dt>
+      <dd>装好 <a href="https://ollama.com">Ollama</a> 并拉一个嵌入模型:<code>ollama pull nomic-embed-text</code>(全程离线、不花钱)。</dd>
+      <dt>建议目录 <span class="en">layout</span></dt>
+      <dd><code>rag/{types,chunking,embeddings,store,loaders,rerank,pipeline}.py</code> + <code>api.py</code> + <code>tests/</code> + 前端 <code>knowledge/</code>。</dd>
+    </dl>
+  </div>
+
+  <p class="aside">
+    <strong>一条贯穿全篇的设计原则:</strong>"<em>要什么</em>"(接口 / Protocol)和"<em>谁来做</em>"(具体实现)分开写。
+    上层只依赖接口,换实现(换嵌入模型、换向量库、换加载器)时,核心逻辑一行不用改。
+    原课程把它们分进 domain/application/infrastructure 三层;这里为了通用,只用<strong>同一个 <code>rag/</code> 包内的不同文件</strong>表达同样的边界——你可按需再分层。
+  </p>
+
+  <!-- ============ 1. 数据结构 ============ -->
+  <h2>1 · 数据结构:Chunk 与 Document</h2>
+  <p><strong>做什么:</strong>定义两个纯数据对象——<code>Document</code>(一份原始资料)和 <code>Chunk</code>(切好的一小段)。不碰文件、不碰网络。</p>
+  <pre class="code">
+# rag/types.py
+from dataclasses import dataclass, field
+
+@dataclass(frozen=True)
+class Document:
+    """一份加载进来的原始资料(已统一成纯文本)。"""
+    path: str                      # 来源标识:文件路径 / URL,用于溯源
+    text: str
+    metadata: dict = field(default_factory=dict)
+
+@dataclass(frozen=True)
+class Chunk:
+    """切分后的一小段,是检索与入库的最小单位。"""
+    id: str                        # 稳定且唯一,例如 "notes.md#3"
+    text: str
+    metadata: dict = field(default_factory=dict)
+  </pre>
+  <p><strong>为什么这么写:</strong>用 <code>frozen=True</code> 的 dataclass 让它们<em>不可变</em>——纯数据传来传去不怕被偷改,便于测试与缓存。
+  把"数据"和"算法"分开:这两个对象不包含任何 I/O,谁都能 import、谁都能 new,是整套系统最稳定的地基。
+  <code>id</code> 放在 Chunk 里而不是临时生成,是为了后面"幂等入库"(同一段重存不重复)。</p>
+
+  <!-- ============ 2. 分块 ============ -->
+  <h2>2 · 分块:定长窗口 + 重叠</h2>
+  <p><strong>做什么:</strong>把长文本按固定字符数切成多段,相邻段之间留一点<em>重叠</em>,避免把一句话从中间劈开。</p>
+  <pre class="code">
+# rag/chunking.py
+def chunk_text(text: str, chunk_size: int = 400, overlap: int = 60) -> list[str]:
+    """定长切分:每块 chunk_size 字符,相邻块重叠 overlap 字符。"""
+    if overlap >= chunk_size:
+        raise ValueError("overlap 必须小于 chunk_size,否则窗口走不动")
+    step = chunk_size - overlap
+    out, i = [], 0
+    while i < len(text):
+        out.append(text[i:i + chunk_size])
+        i += step
+    return out or [""]
+  </pre>
+  <p><strong>为什么这么写:</strong>检索的精度高度依赖块大小——<em>太大</em>会把无关内容混进同一向量、稀释语义;<em>太小</em>又会切碎上下文。
+  经验区间:<code>chunk_size</code> 取几百字符(约一两段话),<code>overlap</code> 取其 <strong>10%–20%</strong>。
+  用 <code>step = chunk_size - overlap</code> 让窗口每次只前进"非重叠"那段,这样块与块在边界处共享文字,语义不被生切。
+  开头那行 <code>raise</code> 是<em>边界校验</em>:overlap ≥ chunk_size 会让 step ≤ 0、循环卡死,提前报错比事后死锁好。</p>
+
+  <!-- ============ 3. 嵌入 + 相似度 ============ -->
+  <h2>3 · 嵌入与相似度</h2>
+  <p><strong>做什么:</strong>定义一个"把文本变成向量"的<em>接口</em> <code>Embedder</code>,给一个本地 Ollama 的实现,再加一个纯数学的余弦相似度。</p>
+  <pre class="code">
+# rag/embeddings.py
+import math
+from typing import Protocol
+import httpx
+
+class Embedder(Protocol):
+    """契约:给一批文本,返回一批等长向量。谁实现都行。"""
+    def embed(self, texts: list[str]) -> list[list[float]]: ...
+
+class OllamaEmbedder:
+    """本地 Ollama 实现(离线、免费)。换 OpenAI 等只需另写一个类。"""
+    def __init__(self, model: str = "nomic-embed-text",
+                 base_url: str = "http://localhost:11434"):
+        self._model = model
+        self._url = base_url.rstrip("/") + "/api/embeddings"
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        out = []
+        for t in texts:                       # 逐条请求,最稳;量大可改批量/并发
+            r = httpx.post(self._url, json={"model": self._model, "prompt": t}, timeout=60)
+            r.raise_for_status()
+            out.append(r.json()["embedding"])
+        return out
+
+def cosine(a: list[float], b: list[float]) -> float:
+    """余弦相似度:看两个向量"方向"有多接近,范围约 -1~1,越大越像。"""
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(y * y for y in b))
+    return dot / (na * nb) if na and nb else 0.0
+  </pre>
+  <p><strong>为什么这么写:</strong>把 <code>Embedder</code> 写成 <code>Protocol</code>(接口),是为了让上层只认"能 embed 就行",
+  哪天想从本地 Ollama 换成云端 API,只要再写一个有同名方法的类,其它代码全不动——这就是<em>依赖接口、不依赖实现</em>。
+  余弦相似度只比<em>方向</em>不比<em>长度</em>,所以长短不一的文本也能公平比较;它是纯函数、无 I/O,因此最容易单测。
+  结尾 <code>if na and nb else 0.0</code> 防的是零向量除零崩溃。</p>
+
+  <!-- ============ 4. 向量库 ============ -->
+  <h2>4 · 向量库:接口 + Chroma 实现</h2>
+  <p><strong>做什么:</strong>定义"能存能查"的 <code>VectorStore</code> 接口,用 Chroma 做一个<em>持久化到本地磁盘</em>的实现。</p>
+  <pre class="code">
+# rag/store.py
+from typing import Protocol
+import chromadb
+from .types import Chunk
+from .embeddings import Embedder
+
+class VectorStore(Protocol):
+    def upsert(self, chunks: list[Chunk]) -> None: ...
+    def query(self, text: str, k: int = 3) -> list[tuple[Chunk, float]]: ...
+
+class ChromaStore:
+    """用 Chroma 持久化到磁盘;向量由我们自己用 Embedder 算好后传入。"""
+    def __init__(self, embedder: Embedder, path: str = "./chroma_db",
+                 collection: str = "kb"):
+        self._embedder = embedder
+        client = chromadb.PersistentClient(path=path)       # 落盘 → 重启数据还在
+        self._col = client.get_or_create_collection(
+            name=collection, metadata={"hnsw:space": "cosine"})
+
+    def upsert(self, chunks: list[Chunk]) -> None:
+        if not chunks:
+            return
+        vectors = self._embedder.embed([c.text for c in chunks])
+        self._col.upsert(                                   # upsert:同 id 覆盖,不重复
+            ids=[c.id for c in chunks],
+            embeddings=vectors,
+            documents=[c.text for c in chunks],
+            metadatas=[c.metadata or {"path": ""} for c in chunks],
+        )
+
+    def query(self, text: str, k: int = 3) -> list[tuple[Chunk, float]]:
+        qv = self._embedder.embed([text])[0]
+        res = self._col.query(query_embeddings=[qv], n_results=k)
+        out = []
+        for cid, doc, meta, dist in zip(
+            res["ids"][0], res["documents"][0],
+            res["metadatas"][0], res["distances"][0]
+        ):
+            score = 1.0 - dist                              # cosine 距离 → 相似度
+            out.append((Chunk(id=cid, text=doc, metadata=meta or {}), score))
+        return out
+  </pre>
+  <p><strong>为什么这么写:</strong>用 <code>PersistentClient(path=...)</code> 而不是内存客户端,数据才会<em>落盘</em>、重启后还在(真正的"知识库")。
+  建集合时指定 <code>hnsw:space=cosine</code>,让向量库内部用余弦距离,和我们第 3 节的相似度口径一致。
+  关键是<strong>我们自己算好 <code>embeddings=</code> 再传进去</strong>,而不是让 Chroma 替我们嵌入——这样嵌入模型完全可控、可换、可离线。
+  用 <code>upsert</code> 而非 <code>add</code>:同一个 <code>id</code> 再存一次就<em>覆盖</em>而不是产生重复,这是"幂等"的基础。
+  查询结果里 Chroma 给的是<em>距离</em>(越小越近),我们换算成 <code>1 - dist</code> 的<em>相似度</em>(越大越像),对调用者更直观。</p>
+
+  <!-- ============ 5. 加载器 ============ -->
+  <h2>5 · 加载器:把乱七八糟的来源统一成 Document</h2>
+  <p><strong>做什么:</strong>为每种来源(纯文本 / PDF / 网页)写一个加载器,都吐出统一的 <code>Document</code>;用一张注册表按"扩展名 / 协议"分发。</p>
+  <pre class="code">
+# rag/loaders.py
+from typing import Protocol
+import httpx
+from pypdf import PdfReader
+from bs4 import BeautifulSoup
+from .types import Document
+
+class Loader(Protocol):
+    def can_load(self, path: str) -> bool: ...
+    def load(self, path: str) -> Document: ...
+
+class TextLoader:
+    def can_load(self, path): return path.lower().endswith((".md", ".txt"))
+    def load(self, path):
+        with open(path, encoding="utf-8") as f:
+            return Document(path=path, text=f.read(), metadata={"source": "file"})
+
+class PdfLoader:
+    def can_load(self, path): return path.lower().endswith(".pdf")
+    def load(self, path):
+        reader = PdfReader(path)
+        text = "\n".join(p.extract_text() or "" for p in reader.pages)
+        return Document(path=path, text=text, metadata={"pages": len(reader.pages)})
+
+class WebLoader:
+    def can_load(self, path): return path.startswith(("http://", "https://"))
+    def load(self, path):
+        html = httpx.get(path, timeout=20, follow_redirects=True).text
+        soup = BeautifulSoup(html, "html.parser")
+        for tag in soup(["script", "style", "nav", "footer", "header"]):
+            tag.decompose()                                 # 去模板:扔掉噪声
+        text = soup.get_text(separator="\n", strip=True)
+        return Document(path=path, text=text, metadata={"source": "web"})
+
+LOADERS: list[Loader] = [TextLoader(), PdfLoader(), WebLoader()]
+
+def pick_loader(path: str) -> Loader:
+    for loader in LOADERS:
+        if loader.can_load(path):
+            return loader
+    raise ValueError(f"没有能处理这种来源的加载器: {path}")
+  </pre>
+  <p><strong>为什么这么写:</strong>"数据源很乱"这件事,被关进了<em>加载层</em>——上层只看到统一的 <code>Document</code>,完全不知道它来自 PDF 还是网页。
+  加一种新格式 = <strong>新写一个加载器类 + 往 <code>LOADERS</code> 加一行</strong>,核心管道一行不改(开闭原则)。
+  PDF 抽文本天生难(PDF 没有"语义层",正文是绝对定位的字符),所以这里只求"先能用",必要时再清洗页眉页脚。
+  网页加载先<em>去模板</em>(删掉 nav/footer/script),否则会把"登录""Cookie 同意"这些噪声也存进库。
+  <code>pick_loader</code> 找不到匹配就<em>明确报错</em>,而不是假装能读——错误尽早暴露。</p>
+
+  <!-- ============ 6. 用例:入库 + 提问 ============ -->
+  <h2>6 · 两个用例:入库(写)与提问(读)</h2>
+  <p><strong>做什么:</strong>把前面的零件编排成两条主流程——<code>ingest()</code>(加载→分块→入库)和 <code>ask()</code>(检索→认怂→带出处作答)。</p>
+  <pre class="code">
+# rag/pipeline.py
+from dataclasses import dataclass
+from .types import Chunk
+from .store import VectorStore
+from .loaders import pick_loader
+from .chunking import chunk_text
+
+# ---------- 写路径:把一份资料存进库 ----------
+def ingest(store: VectorStore, path: str,
+           chunk_size: int = 400, overlap: int = 60) -> int:
+    doc = pick_loader(path).load(path)                      # 1) 异构来源 → 统一 Document
+    pieces = chunk_text(doc.text, chunk_size, overlap)      # 2) 切块
+    chunks = [
+        Chunk(id=f"{doc.path}#{i}", text=p,                 # 3) 稳定 id = 路径#序号
+              metadata={"path": doc.path, "index": i})
+        for i, p in enumerate(pieces)
+    ]
+    store.upsert(chunks)                                    # 4) 入库(同 id 覆盖 → 幂等)
+    return len(chunks)
+
+# ---------- 读路径:基于库回答问题 ----------
+@dataclass
+class Source:
+    id: str
+    score: float
+
+@dataclass
+class Answer:
+    text: str
+    sources: list[Source]
+
+THRESHOLD = 0.30        # 认怂阈值:最相关的也低于它,就老实说不知道
+
+def ask(store: VectorStore, question: str, k: int = 3) -> Answer:
+    hits = store.query(question, k=k)                       # 1) 召回 top-k
+    if not hits or hits[0][1] < THRESHOLD:                  # 2) 太不相关 → 认怂
+        return Answer(text="我在知识库里没找到相关内容。", sources=[])
+    context = "\n\n".join(f"[{c.id}] {c.text}" for c, _ in hits)
+    prompt = (                                              # 3) 带出处约束的提示词
+        "只依据下面的资料回答问题,并标注用到的 [来源]。"
+        "资料里没有就说不知道,不要编。\n\n"
+        f"资料:\n{context}\n\n问题:{question}"
+    )
+    text = call_llm(prompt)                                 # 4) 交给你的生成模型
+    return Answer(text=text, sources=[Source(c.id, s) for c, s in hits])
+  </pre>
+  <p><strong>为什么这么写:</strong>用例层只<em>编排</em>,不碰具体 I/O 细节——换向量库、换加载器都不影响这两个函数。
+  入库时 <code>id = f"{path}#{i}"</code> 是<strong>稳定</strong>的:同一份文件重新入库,生成的 id 不变,配合 <code>upsert</code> 就<em>幂等</em>(不产生重复块)。
+  提问时先做<strong>认怂阈值</strong>判断:检索本质是"找最近的",哪怕库里全是无关内容也会返回<em>某个</em>最近的——所以必须用一个相似度下限挡住,否则模型会拿不相关的资料<em>一本正经地编</em>(幻觉)。
+  提示词里强制"只依据资料 + 标注来源 + 没有就说不知道",把生成约束在证据范围内,这正是 RAG 比纯大模型可信的原因。
+  <code>call_llm</code> 留作你的接入点(本地 Ollama 的 <code>/api/chat</code> 或任意 LLM),返回拼好的答案与出处。</p>
+
+  <!-- ============ 7. HTTP ============ -->
+  <h2>7 · 用 HTTP 暴露:FastAPI</h2>
+  <p><strong>做什么:</strong>把两个用例包成 <code>POST /ingest</code> 和 <code>POST /knowledge/ask</code> 两个接口,并开启浏览器跨域。</p>
+  <pre class="code">
+# api.py
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from rag.embeddings import OllamaEmbedder
+from rag.store import ChromaStore
+from rag import pipeline
+
+# 进程内只建一次,被读写两条路径共享(同一个库实例!)
+store = ChromaStore(embedder=OllamaEmbedder(), path="./chroma_db")
+
+app = FastAPI(title="Local Knowledge Base")
+app.add_middleware(                                # 让 localhost:3000 的前端能访问
+    CORSMiddleware, allow_origins=["*"],
+    allow_credentials=False, allow_methods=["*"], allow_headers=["*"],
+)
+
+class IngestIn(BaseModel):
+    path: str
+
+class IngestOut(BaseModel):
+    path: str
+    chunks_ingested: int
+
+class AskIn(BaseModel):
+    question: str
+    k: int = 3
+
+class SourceOut(BaseModel):
+    id: str
+    score: float
+
+class AskOut(BaseModel):
+    answer: str
+    sources: list[SourceOut]
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+@app.post("/ingest", response_model=IngestOut)
+def ingest(body: IngestIn):
+    n = pipeline.ingest(store, body.path)
+    return IngestOut(path=body.path, chunks_ingested=n)
+
+@app.post("/knowledge/ask", response_model=AskOut)
+def ask(body: AskIn):
+    ans = pipeline.ask(store, body.question, k=body.k)
+    return AskOut(answer=ans.text,
+                  sources=[SourceOut(id=s.id, score=s.score) for s in ans.sources])
+  </pre>
+  <p><strong>为什么这么写:</strong>把 <code>store</code> 在模块顶层<strong>只建一次</strong>,让"入库"和"提问"<em>共享同一个库实例</em>——否则你存进去的东西另一个接口查不到。
+  请求/响应都用 Pydantic 模型(<code>BaseModel</code> + <code>response_model=</code>):自动校验入参、自动生成文档、把内部对象和对外 JSON 解耦。
+  浏览器有"同源"限制,前端跑在 <code>:3000</code>、后端在 <code>:8000/:8001</code> 属于<em>不同源</em>,必须用 <code>CORSMiddleware</code> 放行;
+  注意通配 <code>"*"</code> 不能和 <code>allow_credentials=True</code> 并用,这里不带凭据所以 <code>"*"</code> 最省事。
+  启动:<code>uvicorn api:app --reload --port 8000</code>。</p>
+
+  <!-- ============ 8. 前端 ============ -->
+  <h2>8 · 前端调用:类型 + 唯一的网络层</h2>
+  <p><strong>做什么:</strong>前端镜像后端的 DTO,再写一个<em>唯一</em>发 <code>fetch</code> 的服务文件,组件/页面只调它。</p>
+  <pre class="code">
+// knowledge/types.ts —— 镜像后端字段
+export interface IngestResult { path: string; chunks_ingested: number; }
+export interface Source { id: string; score: number; }
+export interface AskResult { answer: string; sources: Source[]; }
+  </pre>
+  <pre class="code">
+// knowledge/api.ts —— 整个功能里唯一碰 fetch 的地方
+const API_BASE = (
+  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000"
+).replace(/\/$/, "");
+
+async function request&lt;T&gt;(path: string, init?: RequestInit): Promise&lt;T&gt; {
+  const res = await fetch(`${API_BASE}${path}`, {
+    headers: { "Content-Type": "application/json" }, ...init,
+  });
+  if (!res.ok) throw new Error(`Request failed (${res.status})`); // 404 不会自动抛!
+  return (await res.json()) as T;
+}
+
+export function ingest(path: string) {
+  return request&lt;IngestResult&gt;("/ingest", {
+    method: "POST", body: JSON.stringify({ path }),
+  });
+}
+export function ask(question: string, k = 3) {
+  return request&lt;AskResult&gt;("/knowledge/ask", {
+    method: "POST", body: JSON.stringify({ question, k }),
+  });
+}
+  </pre>
+  <p><strong>为什么这么写:</strong>前端 <code>types.ts</code> 照抄后端字段(<em>镜像</em>),两边对得上,改一处就知道另一处要跟。
+  把 <code>fetch</code> 收口在一个 <code>request&lt;T&gt;</code> 里:网络细节、错误处理、baseURL 只写一遍,组件保持干净。
+  最关键的一行是 <code>if (!res.ok) throw</code>——<code>fetch()</code> 收到 404/500 时<em>不会自动报错</em>,它照常"兑现"一个响应对象,你必须自己查 <code>res.ok</code>,否则会把错误页当成数据解析。
+  地址用 <code>NEXT_PUBLIC_</code> 环境变量(带默认值),这样换部署地址不改代码;只有 <code>NEXT_PUBLIC_</code> 前缀的变量才会被带进浏览器。</p>
+
+  <!-- ============ 9. 重排 ============ -->
+  <h2>9 · 提准:加一道重排(re-rank)</h2>
+  <p><strong>做什么:</strong>向量召回又快又糙;在它之后加一道交叉编码器,对"问题×候选"逐对精排,把真正相关的顶上来。</p>
+  <pre class="code">
+# rag/rerank.py
+from sentence_transformers import CrossEncoder
+from .types import Chunk
+
+class CrossEncoderReRanker:
+    def __init__(self, model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"):
+        self._model = CrossEncoder(model)                   # 本地模型,可离线
+
+    def rerank(self, query: str, candidates: list[Chunk]) -> list[Chunk]:
+        pairs = [(query, c.text) for c in candidates]
+        scores = self._model.predict(pairs)                 # 每对一个相关分
+        ranked = sorted(zip(candidates, scores), key=lambda x: x[1], reverse=True)
+        return [c for c, _ in ranked]
+
+# 在读路径里改成两阶段:先召回放大,再精排收窄
+def retrieve(store, reranker, query: str, k: int = 3, fetch: int = 20):
+    candidates = [c for c, _ in store.query(query, k=fetch)] # 1) 召回 20 条(快、糙)
+    ranked = reranker.rerank(query, candidates)              # 2) 交叉编码器精排
+    return ranked[:k]                                        # 3) 只留前 k 条(准)
+  </pre>
+  <p><strong>为什么这么写:</strong>向量检索(双编码器)把问题和文档<em>各自</em>编码再比距离,能秒扫整库,但有时把"字面像、其实跑题"的排前面。
+  交叉编码器把问题和候选<em>放一起</em>读,判断准得多——可它每对都要算一次,对全库跑太慢。
+  所以用<strong>二阶段</strong>:便宜的召回先把范围缩到 20 条,再把贵的算力只花在这一小批上。
+  重排是<em>纯增量</em>——只多挂一个组件、把读路径从一阶段改成两阶段,生成和接口都不用动。慢的话把 <code>fetch</code> 调小即可。</p>
+
+  <!-- ============ 10. 测试 ============ -->
+  <h2>10 · 守住成果:pytest 验收</h2>
+  <p><strong>做什么:</strong>把"健康 / 投喂 / 命中 / 库外认怂"四步写成自动化测试;用假实现替掉真模型,让测试快且稳。</p>
+  <pre class="code">
+# tests/conftest.py
+import pytest
+from fastapi.testclient import TestClient
+
+class FakeEmbedder:                        # 固定向量 → 结果确定,不受模型随机性影响
+    def embed(self, texts):
+        return [[1.0, 0.0, 0.0] for _ in texts]
+
+@pytest.fixture
+def client(tmp_path):
+    # 用假嵌入 + 临时目录建一个干净的 app,避免污染真数据
+    from rag.store import ChromaStore
+    from rag import pipeline
+    import api
+    api.store = ChromaStore(embedder=FakeEmbedder(), path=str(tmp_path))
+    return TestClient(api.app)
+  </pre>
+  <pre class="code">
+# tests/test_acceptance.py
+def test_health(client):
+    r = client.get("/health")
+    assert r.status_code == 200 and r.json() == {"status": "ok"}
+
+def test_ingest_then_ask(client, tmp_path):
+    f = tmp_path / "e.md"; f.write_text("嵌入把文本变成向量。", encoding="utf-8")
+    r = client.post("/ingest", json={"path": str(f)})
+    assert r.status_code == 200 and r.json()["chunks_ingested"] >= 1
+
+    r = client.post("/knowledge/ask", json={"question": "嵌入是什么?", "k": 3})
+    assert r.status_code == 200
+    assert r.json()["sources"]              # 命中:出处非空
+  </pre>
+  <p><strong>为什么这么写:</strong>真模型/真服务又慢又"飘"——同一句话每次结果可能不同,测试就会时绿时红、没人敢信。
+  所以换上<strong>假实现</strong>(<code>FakeEmbedder</code> 返回固定向量),测的是<em>你的编排逻辑</em>(投喂→检索→认怂),而非模型本身。
+  <code>TestClient</code> 是 FastAPI 的"假浏览器",不用真起服务器就能调接口;测试函数写成<em>普通 <code>def</code></em>(不是 async),直接 <code>assert</code>。
+  用 <code>tmp_path</code> 临时目录,每个测试一套干净的库,互不污染。跑:<code>pytest -q</code>。</p>
+
+  <!-- ============ 11. 评测 ============ -->
+  <h2>11 · 量化:检索评测(命中率 / MRR / 召回率)</h2>
+  <p><strong>做什么:</strong>攒一个"问题 + 正确出处"的黄金集,写三把尺子,给"只检索"和"检索+重排"打分对比。</p>
+  <pre class="code">
+# tests/eval/metrics.py
+def hit_at_k(ranked_ids, relevant, k):
+    """前 k 条里只要命中一个正确出处就算 1 分(找没找到)。"""
+    return 1.0 if set(ranked_ids[:k]) & relevant else 0.0
+
+def reciprocal_rank(ranked_ids, relevant):
+    """第一个正确项排第 n 名就得 1/n(越靠前越值钱)。"""
+    for i, cid in enumerate(ranked_ids, start=1):
+        if cid in relevant:
+            return 1.0 / i
+    return 0.0
+
+def recall_at_k(ranked_ids, relevant, k):
+    """前 k 条捞回了该捞的几成(全不全)。"""
+    return len(set(ranked_ids[:k]) & relevant) / len(relevant)
+
+GOLDEN = [
+    {"q": "分块为什么不能切太大?", "relevant": {"chunking.md#2", "chunking.md#5"}},
+    {"q": "嵌入是什么?",          "relevant": {"embeddings.md#0"}},
+    # … 攒几十条,覆盖你真正会问的问题
+]
+
+def evaluate(retrieve_fn, k=3):
+    hit = mrr = rec = 0.0
+    for item in GOLDEN:
+        ranked = [c.id for c in retrieve_fn(item["q"], k=10)]
+        hit += hit_at_k(ranked, item["relevant"], k)
+        mrr += reciprocal_rank(ranked, item["relevant"])
+        rec += recall_at_k(ranked, item["relevant"], k)
+    n = len(GOLDEN)
+    return {f"hit@{k}": hit / n, "mrr": mrr / n, f"recall@{k}": rec / n}
+  </pre>
+  <p><strong>为什么这么写:</strong>"重排有没有用"不能靠感觉,要靠<em>数字</em>。三把尺子量不同侧面:命中率问"找到没",MRR 问"排得够不够靠前",召回率问"该找的捞回几成"。
+  重排不增删候选、只<em>重新排序</em>,所以它最该让 <strong>MRR</strong> 涨。
+  把"只检索"当<em>基线</em>、"检索+重排"和它比,涨了才值得保留这份复杂度,没涨就别加。
+  黄金集的质量决定评测可信度——它是你的尺子,标注要诚实。需要工业级现成方案(含 NDCG/Precision@k),可换用 <code>sentence-transformers</code> 的 <code>InformationRetrievalEvaluator</code>,原理与这三个小函数一致。</p>
+
+  <!-- ============ 拼装 ============ -->
+  <h2>12 · 怎么拼起来跑</h2>
+  <pre class="code">
+# 1) 起后端
+ollama pull nomic-embed-text
+uvicorn api:app --reload --port 8000
+
+# 2) 投喂 & 提问(curl 或前端)
+curl -X POST http://localhost:8000/ingest \
+  -H "Content-Type: application/json" -d '{"path":"./notes/embeddings.md"}'
+
+curl -X POST http://localhost:8000/knowledge/ask \
+  -H "Content-Type: application/json" -d '{"question":"嵌入是什么?","k":3}'
+
+# 3) 跑测试
+pytest -q
+  </pre>
+  <p class="aside">
+    <strong>映射回原课程(若你想看分层版):</strong>
+    <code>types/chunking/embeddings/store/loaders</code> 对应 domain + infrastructure;
+    <code>pipeline</code> 对应 application 用例;<code>api.py</code> 对应 interface/http。
+    这份手册把它们压进一个 <code>rag/</code> 包是为了<em>通用、好上手</em>;项目大了再按需拆层即可。
+  </p>
+
+  <p class="nav">
+    课程目录 <a href="../index.html">目录</a> · <a href="../knowledge-graph.html">知识图谱</a> ·
+    工作笔记 <a href="../NOTES.md">NOTES</a> ·
+    速查表 <a href="chunking-cheatsheet.html">分块</a> · <a href="similarity-cheatsheet.html">相似度</a> ·
+    第一课 <a href="../lessons/0001-rag-pipeline-mental-model.html">0001 RAG 全景</a>
+  </p>
+
+</article>
+
+<style>
+  /* page-local code block style */
+  pre.code {
+    font-family: var(--mono); font-size: .73rem; line-height: 1.7;
+    background: #f1efe8; padding: .8rem 1rem; border-radius: 6px;
+    overflow-x: auto; white-space: pre; margin: .5rem 0 1rem;
+  }
+  .aside { font-size: .88rem; opacity: .85; border-left: 3px solid var(--accent); padding-left: .85rem; }
+</style>
+</body>
+</html>

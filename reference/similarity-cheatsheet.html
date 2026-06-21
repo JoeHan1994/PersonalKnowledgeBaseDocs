@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>参考 · 相似度 / 距离度量速查</title>
+  <link rel="stylesheet" href="../assets/lesson.css" />
+</head>
+<body>
+<article class="lesson">
+
+  <p class="eyebrow">Reference · 个人知识库</p>
+  <h1>相似度 / 距离度量速查</h1>
+  <p class="subtitle">余弦只是其中一种。挑度量,先看你的数据长什么样。</p>
+
+  <div class="win">
+    <strong>一句话:</strong>度量是"<em>像不像</em>"的尺子。文本语义检索默认用
+    <strong>余弦 / 点积 / 欧氏</strong>(归一化后三者排序基本一致);标签用<strong>杰卡德</strong>、
+    指纹去重用<strong>汉明</strong>、打分推荐用<strong>皮尔逊</strong>、精确词用 <strong>BM25 词袋</strong>。
+    全部可跑代码见 <a href="similarity-examples/all_metrics.py">all_metrics.py</a>。
+  </div>
+
+  <h2>八种度量一览</h2>
+  <table class="ref-table">
+    <tr>
+      <th>度量</th><th>量什么 · 范围</th><th>通俗例子</th><th>典型场景</th>
+    </tr>
+    <tr>
+      <td><strong>余弦</strong><br>Cosine</td>
+      <td>方向夹角,不看长度<br>[−1, 1]</td>
+      <td>口味"比例"一样就高分——饭量大一倍也不影响</td>
+      <td>语义检索默认;文本长短不敏感(RAG 检索块)</td>
+    </tr>
+    <tr>
+      <td><strong>点积 / 内积</strong><br>Dot / IP</td>
+      <td>方向 + 长度都算<br>无上界</td>
+      <td>方向像、且两边分都高,才得高分</td>
+      <td>为点积训练的嵌入模型;归一化后 == 余弦</td>
+    </tr>
+    <tr>
+      <td><strong>欧氏(L2)</strong><br>Euclidean</td>
+      <td>两点直线距离<br>[0, ∞) 越小越近</td>
+      <td>地图上谁离我直线最近,谁就最像</td>
+      <td>向量检索;<strong>Chroma 默认</strong>;归一化后与余弦排序一致</td>
+    </tr>
+    <tr>
+      <td><strong>曼哈顿(L1)</strong><br>Manhattan</td>
+      <td>棋盘格横竖走的步数<br>[0, ∞)</td>
+      <td>不能走斜线,把每个维度差距相加</td>
+      <td>高维稀疏数据;对个别极端维度比欧氏更稳健</td>
+    </tr>
+    <tr>
+      <td><strong>杰卡德</strong><br>Jaccard</td>
+      <td>集合重合 = 交集/并集<br>[0, 1]</td>
+      <td>两个歌单重了几首 ÷ 一共多少首</td>
+      <td>标签 / 关键词 / metadata 过滤;条目去重</td>
+    </tr>
+    <tr>
+      <td><strong>汉明</strong><br>Hamming</td>
+      <td>等长序列差几位<br>[0, 长度]</td>
+      <td>两个哈希指纹差几位</td>
+      <td>二值/哈希指纹(SimHash/MinHash)近似去重</td>
+    </tr>
+    <tr>
+      <td><strong>皮尔逊</strong><br>Pearson</td>
+      <td>"去掉平均分后的余弦"<br>[−1, 1]</td>
+      <td>甲每部都比乙多打 4 分,但排序一致 → 仍判像</td>
+      <td>打分推荐;消除"谁严谁松"的基准差</td>
+    </tr>
+    <tr>
+      <td><strong>BM25 / 词袋</strong><br>TF-IDF 家族</td>
+      <td>关键词字面匹配<br>0 起</td>
+      <td>图书馆按书名里的词找书,不懂近义</td>
+      <td>精确名词/代码/型号;常与向量<strong>混合(hybrid)</strong></td>
+    </tr>
+  </table>
+
+  <h2>为什么语义检索里它们经常"差不多"?</h2>
+  <p>
+    一个常被忽略的事实:当向量被<strong>归一化</strong>(长度都拉成 1)后,
+    <strong>余弦、点积、欧氏给出的排序几乎一致</strong>——因为这时
+    <code>欧氏² = 2 − 2·余弦</code>,余弦越大欧氏越小,是同一回事的不同写法。
+    所以多数向量库(含 Chroma)默认 L2,你照样能拿到"按语义最近"的结果。
+  </p>
+
+  <h2>该挑哪一个?</h2>
+  <table class="ref-table">
+    <tr><th>你的数据 / 目标</th><th>选它</th></tr>
+    <tr><td>文本块的语义检索(本项目主线)</td><td>余弦 / 点积 / 欧氏(看模型 & 向量库默认)</td></tr>
+    <tr><td>按标签、关键词集合找相似条目</td><td>杰卡德</td></tr>
+    <tr><td>哈希指纹判"是不是同一篇" / 去重</td><td>汉明</td></tr>
+    <tr><td>用户打分、推荐,且基准高低不一</td><td>皮尔逊</td></tr>
+    <tr><td>精确型号 / 代码符号 / 专有名词</td><td>BM25 词袋(常 + 向量混合)</td></tr>
+  </table>
+
+  <h2>落到你的项目</h2>
+  <p>
+    度量分两类住处:<strong>纯数学的算法(余弦/欧氏…)是无 I/O 的,归
+    <span class="layer">domain</span> 的 <code>services.py</code></strong>;
+    而"用哪种度量做实际检索"是向量库的能力,由
+    <span class="layer">infrastructure</span> 的 <code>VectorStore</code> 适配器配置。
+    Chroma 创建集合时用 <code>hnsw:space</code> 选 <code>l2</code>(默认)/ <code>cosine</code> / <code>ip</code>——
+    这正是第 4 课要做的事。
+  </p>
+  <p style="font-family:var(--mono);font-size:.78rem;background:#f1efe8;padding:.8rem 1rem;border-radius:6px;line-height:1.7">
+    # 第 4 课会这样建集合(度量 = 一个配置项,不是核心逻辑)<br>
+    collection = client.create_collection(<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;name="kb",<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;configuration={"hnsw": {"space": "cosine"}},&nbsp;&nbsp;# 或 l2(默认) / ip<br>
+    )
+  </p>
+
+  <div class="source">
+    <span class="tag">Primary source · 先读这个</span>
+    <p style="margin:.5rem 0 0">
+      <a href="https://sbert.net/">SBERT</a> 的 <em>Semantic Search</em> 节解释了为何语义检索用余弦;
+      <a href="https://docs.trychroma.com/docs/collections/configure">Chroma · Distance Functions</a>
+      列出它支持的 <code>l2 / cosine / ip</code> 三种度量与默认值。BM25 / 混合检索见
+      <a href="https://sbert.net/examples/applications/retrieve_rerank/README.html">SBERT Retrieve &amp; Re-rank</a>。
+    </p>
+  </div>
+
+  <p class="teacher">
+    <strong>我是你的老师。</strong>"我的资料又有代码符号又有大段说明,该纯向量还是混合检索?"
+    "Chroma 到底该选 cosine 还是 l2?"——这些都问我。
+    全部度量的可运行对比见 <a href="similarity-examples/all_metrics.py">all_metrics.py</a>
+    (<code>python all_metrics.py</code>)。
+  </p>
+
+  <p class="nav">
+    相关课 <a href="../lessons/0003-embeddings.html">0003 嵌入</a> ·
+    工作区 <a href="../MISSION.md">MISSION</a> · <a href="../RESOURCES.md">RESOURCES</a> · <a href="../NOTES.md">NOTES</a>
+  </p>
+
+</article>
+</body>
+</html>
