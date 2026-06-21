@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>速查 · 分块(Chunking)</title>
+  <link rel="stylesheet" href="../assets/lesson.css" />
+</head>
+<body>
+<article class="lesson">
+
+  <p class="eyebrow">Reference · 速查表</p>
+  <h1>分块 Chunking</h1>
+  <p class="subtitle">压缩自 Lesson 0002,设计用于快速查阅与打印。</p>
+
+  <h2>一句话</h2>
+  <p>块 = 知识库里<strong>检索和引用的最小单位</strong>。块的质量决定检索的质量。</p>
+
+  <h2>固定大小 + 重叠</h2>
+  <table class="ref-table">
+    <tr><th>参数</th><th>含义</th><th>经验区间</th></tr>
+    <tr><td><code>chunk_size</code></td><td>每块的长度</td><td>几百字符(一两段话)</td></tr>
+    <tr><td><code>overlap</code></td><td>相邻块重叠的长度</td><td>chunk_size 的 10%–20%</td></tr>
+    <tr><td><code>step</code></td><td>窗口每次前移 = size − overlap</td><td>由上两者导出</td></tr>
+  </table>
+
+  <h2>两端的代价</h2>
+  <table class="ref-table">
+    <tr><th>极端</th><th>后果</th></tr>
+    <tr><td>块太大</td><td>一个向量背负多主题 → 检索不精准、噪声多</td></tr>
+    <tr><td>块太小</td><td>语义被切碎 → 单块缺上下文,模型读不懂</td></tr>
+    <tr><td>零重叠</td><td>跨边界的关键句两块都不完整 → 检索可能两块都漏</td></tr>
+  </table>
+
+  <h2>参考算法(固定大小 + 重叠)</h2>
+  <p style="font-family:var(--mono);font-size:.78rem;background:#f1efe8;padding:.8rem 1rem;border-radius:6px;line-height:1.7">
+    step = max(1, chunk_size − overlap)<br>
+    for start in range(0, len(text), step):<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;end = min(start + chunk_size, len(text))<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;yield text[start:end]<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;if end == len(text): break
+  </p>
+  <p style="font-size:.86rem;color:var(--ink-soft)">
+    注:这是字符级"固定大小"切法,最简单、可预测。进阶有<strong>递归切分</strong>
+    (优先在段落/句子/标点等自然边界断开)与<strong>按结构切分</strong>(代码按函数、Markdown 按标题)。
+    先用固定大小打通闭环,后续再按数据源升级。
+  </p>
+
+  <h2>核心原则</h2>
+  <p>沿着每种格式<strong>天然的结构边界</strong>切;切不动了再退回固定大小+重叠。别对所有数据用同一把刀。</p>
+  <p style="font-family:var(--mono);font-size:.76rem;color:var(--ink-soft)">
+    1. 结构切分(标题/函数/幻灯片/说话人) → 2. 递归细分(过大块按段落→句子→标点) → 3. 固定大小兜底(size+overlap)
+  </p>
+
+  <h2>按数据类型的切割策略 &amp; 可运行示例</h2>
+  <p style="font-size:.86rem">
+    每行对应一个<strong>可独立运行</strong>的脚本(仅标准库、自带样例输入),位于
+    <code>reference/chunking-examples/</code>。运行:<code>python &lt;脚本&gt;</code>。
+  </p>
+  <table class="ref-table">
+    <tr><th>数据类型</th><th>推荐切法</th><th>天然出处</th><th>可运行脚本</th></tr>
+    <tr><td>Markdown / 纯文本</td><td>按标题递归切,过长段落兜底</td><td>heading_path</td>
+        <td><a href="chunking-examples/markdown_text.py">markdown_text.py</a></td></tr>
+    <tr><td>PDF / Word / PPT</td><td>按页/幻灯片,固定大小兜底</td><td>page</td>
+        <td><a href="chunking-examples/documents_pdf.py">documents_pdf.py</a></td></tr>
+    <tr><td>网页 / 文章</td><td>抽正文(去 nav/footer/script),按标题+段落</td><td>url</td>
+        <td><a href="chunking-examples/web_article.py">web_article.py</a></td></tr>
+    <tr><td>代码仓库</td><td>AST 按函数/类整体切</td><td>symbol + 行号</td>
+        <td><a href="chunking-examples/code_repo.py">code_repo.py</a></td></tr>
+    <tr><td>图片 / 扫描件(OCR)</td><td>OCR 版面块,过滤低置信/过短</td><td>page + bbox</td>
+        <td><a href="chunking-examples/image_ocr.py">image_ocr.py</a></td></tr>
+    <tr><td>音频 / 视频(转写)</td><td>按时间窗口/说话人轮次</td><td>[mm:ss]</td>
+        <td><a href="chunking-examples/audio_video.py">audio_video.py</a></td></tr>
+    <tr><td>聊天记录 / 邮件</td><td>按时间窗口聚成话题块,非单条</td><td>conversation + 时间</td>
+        <td><a href="chunking-examples/chat_email.py">chat_email.py</a></td></tr>
+    <tr><td><strong>混合类型</strong>(一源多种内容)</td><td>先切成带类型片段,再分发到各自切法</td><td>content_type + 各自出处</td>
+        <td><a href="chunking-examples/mixed_source.py">mixed_source.py</a></td></tr>
+  </table>
+  <p style="font-size:.84rem;color:var(--ink-soft)">
+    八个脚本共享同一个纯数据 <code>Chunk</code>(document_id / index / text / meta);切法各异,但产物统一。
+    需要外部库的格式(PDF/OCR/转写)用 <strong>stub 桩函数</strong>提供样例输入,因此零依赖即可跑通切分逻辑;
+    脚本顶部注释写明真实场景该替换成哪个库(pypdf / pytesseract / faster-whisper…)。
+    一次跑全部:<code>Get-ChildItem reference\chunking-examples\*.py | %{ python $_.FullName }</code>
+  </p>
+  <p style="font-size:.86rem;color:var(--ink-soft)">
+    <strong>混合类型</strong>是常态(Markdown 里夹代码块/表格、notebook、网页带代码示例):
+    用<strong>组合 / 分发式 Chunker</strong>——先把来源切成"带类型的片段",
+    散文走固定大小、代码走 AST、<strong>表格整张一块绝不切碎</strong>,
+    每块在 meta 里记 <code>content_type</code> 以便检索时按类型过滤。见 mixed_source.py。
+  </p>
+  <p style="font-size:.86rem;color:var(--ink-soft)">
+    落到项目:<code>Chunk</code> 在 <span class="layer">domain</span>,一个 <code>Chunker</code> 端口;
+    每个脚本的策略对应 <span class="layer">infrastructure</span> 的一个适配器,由 Loader 按文件类型选择
+    (.md→Markdown、.py→Code、其余→FixedSize 兜底)。加新数据源 = 插一个新适配器。
+  </p>
+
+  <h2>分层归属(你的项目)</h2>
+  <table class="ref-table">
+    <tr><th>东西</th><th>层</th><th>为什么</th></tr>
+    <tr><td><code>Chunk</code> 实体(纯数据)</td><td>domain</td><td>无 I/O、无框架</td></tr>
+    <tr><td>切分策略(算法)</td><td>application / infrastructure</td><td>可按数据源替换</td></tr>
+  </table>
+
+  <h2>出处</h2>
+  <p style="font-size:.86rem">
+    · <a href="https://docs.trychroma.com/">Chroma 文档</a> — 块如何带 document+metadata 存取<br>
+    · <a href="https://ollama.com/blog/embedding-models">Ollama embedding 示例</a> — 块→向量→检索的真实代码
+  </p>
+
+  <p class="nav">
+    来自 <a href="../lessons/0002-chunking.html">Lesson 0002 分块</a> ·
+    <a href="../RESOURCES.md">RESOURCES</a>
+  </p>
+
+</article>
+</body>
+</html>
